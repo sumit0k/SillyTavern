@@ -101,6 +101,7 @@ const default_settings = {
     openai_model: 'gpt-3.5-turbo',
     jailbreak_system: false,
     reverse_proxy: '',
+    legacy_streaming: false,
 };
 
 const oai_settings = {
@@ -125,6 +126,7 @@ const oai_settings = {
     openai_model: 'gpt-3.5-turbo',
     jailbreak_system: false,
     reverse_proxy: '',
+    legacy_streaming: false,
 };
 
 let openai_setting_names;
@@ -495,9 +497,10 @@ function tryParseStreamingError(str) {
 }
 
 function checkQuotaError(data) {
-    const errorText = `<h3>You have no credits left to use with this API key.<br>
-    Check your billing details on the
-    <a href="https://platform.openai.com/account/usage" target="_blank">OpenAI website.</a></h3>`;
+    const errorText = `<h3>Encountered an error while processing your request.<br>
+    Check you have credits available on your
+    <a href="https://platform.openai.com/account/usage" target="_blank">OpenAI account</a>.<br>
+    If you have sufficient credits, please try again later.</h3>`;
 
     if (!data) {
         return;
@@ -555,13 +558,25 @@ async function sendOpenAIRequest(type, openai_msgs_tosend, signal) {
             const decoder = new TextDecoder();
             const reader = response.body.getReader();
             let getMessage = "";
+            let messageBuffer = "";
             while (true) {
                 const { done, value } = await reader.read();
                 let response = decoder.decode(value);
 
                 tryParseStreamingError(response);
 
-                let eventList = response.split("\n");
+                let eventList = [];
+
+                // ReadableStream's buffer is not guaranteed to contain full SSE messages as they arrive in chunks
+                // We need to buffer chunks until we have one or more full messages (separated by double newlines)
+                if (!oai_settings.legacy_streaming) {
+                    messageBuffer += response;
+                    eventList = messageBuffer.split("\n\n");
+                    // Last element will be an empty string or a leftover partial message
+                    messageBuffer = eventList.pop();
+                } else {
+                    eventList = response.split("\n");
+                }
 
                 for (let event of eventList) {
                     if (!event.startsWith("data"))
@@ -618,7 +633,7 @@ async function calculateLogitBias() {
 
 function countTokens(messages, full = false) {
     let chatId = 'undefined';
-    
+
     try {
         if (selected_group) {
             chatId = groups.find(x => x.id == selected_group)?.chat_id;
@@ -650,7 +665,7 @@ function countTokens(messages, full = false) {
         else {
             jQuery.ajax({
                 async: false,
-                type: 'POST', // 
+                type: 'POST', //
                 url: `/tokenize_openai?model=${oai_settings.openai_model}`,
                 data: JSON.stringify([message]),
                 dataType: "json",
@@ -697,6 +712,7 @@ function loadOpenAISettings(data, settings) {
     oai_settings.openai_max_tokens = settings.openai_max_tokens ?? default_settings.openai_max_tokens;
     oai_settings.bias_preset_selected = settings.bias_preset_selected ?? default_settings.bias_preset_selected;
     oai_settings.bias_presets = settings.bias_presets ?? default_settings.bias_presets;
+    oai_settings.legacy_streaming = settings.legacy_streaming ?? default_settings.legacy_streaming;
 
     if (settings.nsfw_toggle !== undefined) oai_settings.nsfw_toggle = !!settings.nsfw_toggle;
     if (settings.keep_example_dialogue !== undefined) oai_settings.keep_example_dialogue = !!settings.keep_example_dialogue;
@@ -720,6 +736,7 @@ function loadOpenAISettings(data, settings) {
     $('#wrap_in_quotes').prop('checked', oai_settings.wrap_in_quotes);
     $('#nsfw_first').prop('checked', oai_settings.nsfw_first);
     $('#jailbreak_system').prop('checked', oai_settings.jailbreak_system);
+    $('#legacy_streaming').prop('checked', oai_settings.legacy_streaming);
 
     if (settings.main_prompt !== undefined) oai_settings.main_prompt = settings.main_prompt;
     if (settings.nsfw_prompt !== undefined) oai_settings.nsfw_prompt = settings.nsfw_prompt;
@@ -768,8 +785,8 @@ async function getStatusOpen() {
         };
 
         return jQuery.ajax({
-            type: 'POST', // 
-            url: '/getstatus_openai', // 
+            type: 'POST', //
+            url: '/getstatus_openai', //
             data: JSON.stringify(data),
             beforeSend: function () {
                 if (oai_settings.reverse_proxy) {
@@ -839,6 +856,7 @@ async function saveOpenAIPreset(name, settings) {
         jailbreak_system: settings.jailbreak_system,
         impersonation_prompt: settings.impersonation_prompt,
         bias_preset_selected: settings.bias_preset_selected,
+        legacy_streaming: settings.legacy_streaming,
     };
 
     const savePresetSettings = await fetch(`/savepreset_openai?name=${name}`, {
@@ -1102,6 +1120,7 @@ function onSettingsPresetChange() {
         jailbreak_prompt: ['#jailbreak_prompt_textarea', 'jailbreak_prompt', false],
         impersonation_prompt: ['#impersonation_prompt_textarea', 'impersonation_prompt', false],
         bias_preset_selected: ['#openai_logit_bias_preset', 'bias_preset_selected', false],
+        legacy_streaming: ['#legacy_streaming', 'legacy_streaming', false],
     };
 
     for (const [key, [selector, setting, isCheckbox]] of Object.entries(settingsToUpdate)) {
@@ -1163,7 +1182,7 @@ function onReverseProxyInput() {
 async function onConnectButtonClick(e) {
     e.stopPropagation();
     const api_key_openai = $('#api_key_openai').val().trim();
-    
+
     if (api_key_openai.length) {
         await writeSecret(SECRET_KEYS.OPENAI, api_key_openai);
     }
@@ -1319,6 +1338,11 @@ $(document).ready(function () {
     $("#impersonation_prompt_restore").on('click', function () {
         oai_settings.impersonation_prompt = default_impersonation_prompt;
         $('#impersonation_prompt_textarea').val(oai_settings.impersonation_prompt);
+        saveSettingsDebounced();
+    });
+
+    $('#legacy_streaming').on('input', function () {
+        oai_settings.legacy_streaming = !!$(this).prop('checked');
         saveSettingsDebounced();
     });
 
