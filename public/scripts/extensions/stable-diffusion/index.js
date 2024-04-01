@@ -1882,6 +1882,45 @@ function generateFreeModePrompt(trigger) {
         });
 }
 
+async function generateAvatarBase64(generationType) {
+    let avatarUrl;
+
+    if (generationType == generationMode.USER_MULTIMODAL) {
+        avatarUrl = getUserAvatar(user_avatar);
+    }
+    else {
+        const context = getContext();
+
+        if (context.groupId) {
+            const groupMembers = context.groups.find(x => x.id === context.groupId)?.members;
+            const lastMessageAvatar = context.chat?.filter(x => !x.is_system && !x.is_user)?.slice(-1)[0]?.original_avatar;
+            const randomMemberAvatar = Array.isArray(groupMembers) ? groupMembers[Math.floor(Math.random() * groupMembers.length)]?.avatar : null;
+            const avatarToUse = lastMessageAvatar || randomMemberAvatar;
+            avatarUrl = formatCharacterAvatar(avatarToUse);
+        } else {
+            avatarUrl = getCharacterAvatar(context.characterId);
+        }
+    }
+
+    try {
+        const response = await fetch(avatarUrl);
+
+        console.log('avatarUrl', avatarUrl);
+        if (!response.ok) {
+            throw new Error('Could not fetch avatar image.');
+        }
+
+        const avatarBlob = await response.blob();
+        const avatarBase64 = await getBase64Async(avatarBlob);
+        return avatarBase64;
+
+    } catch (error) {
+        console.log(error);
+        toastr.error('Avatar Base64 Generation failed. Please try again.', 'Image Generation');
+        throw new Error('Avatar Base64 Generation failed');
+    }
+}
+
 /**
  * Generates a prompt using multimodal captioning.
  * @param {number} generationType - The type of image generation to perform.
@@ -1973,10 +2012,10 @@ async function sendGenerationRequest(generationType, prompt, characterName = nul
                 result = await generateHordeImage(prefixedPrompt, negativePrompt);
                 break;
             case sources.vlad:
-                result = await generateAutoImage(prefixedPrompt, negativePrompt);
+                result = await generateAutoImage(generationType, prefixedPrompt, negativePrompt);
                 break;
             case sources.auto:
-                result = await generateAutoImage(prefixedPrompt, negativePrompt);
+                result = await generateAutoImage(generationType, prefixedPrompt, negativePrompt);
                 break;
             case sources.novel:
                 result = await generateNovelImage(prefixedPrompt, negativePrompt);
@@ -2113,15 +2152,19 @@ async function generateHordeImage(prompt, negativePrompt) {
         throw new Error(text);
     }
 }
-
 /**
  * Generates an image in SD WebUI API using the provided prompt and configuration settings.
  *
+ * @param {number} generationType - The type of image generation to perform.
  * @param {string} prompt - The main instruction used to guide the image generation.
  * @param {string} negativePrompt - The instruction used to restrict the image generation.
  * @returns {Promise<{format: string, data: string}>} - A promise that resolves when the image generation and processing are complete.
  */
-async function generateAutoImage(prompt, negativePrompt) {
+async function generateAutoImage(generationType, prompt, negativePrompt) {
+    let args = [
+        await generateAvatarBase64(generationType),
+        true
+      ];
     const result = await fetch('/api/sd/generate', {
         method: 'POST',
         headers: getRequestHeaders(),
@@ -2145,6 +2188,7 @@ async function generateAutoImage(prompt, negativePrompt) {
             send_images: true,
             do_not_save_grid: false,
             do_not_save_samples: false,
+            alwayson_scripts: { roop: { args: args } },
         }),
     });
 
