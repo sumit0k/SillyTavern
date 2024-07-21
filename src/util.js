@@ -1,6 +1,7 @@
 const path = require('path');
 const fs = require('fs');
 const commandExistsSync = require('command-exists').sync;
+const writeFileAtomicSync = require('write-file-atomic').sync;
 const _ = require('lodash');
 const yauzl = require('yauzl');
 const mime = require('mime-types');
@@ -8,45 +9,34 @@ const yaml = require('yaml');
 const { default: simpleGit } = require('simple-git');
 const { Readable } = require('stream');
 
-const { DIRECTORIES } = require('./constants');
+/**
+ * Parsed config object.
+ */
+let CACHED_CONFIG = null;
 
 /**
  * Returns the config object from the config.yaml file.
  * @returns {object} Config object
  */
 function getConfig() {
-    function getNewConfig() {
-        try {
-            const config = yaml.parse(fs.readFileSync(path.join(process.cwd(), './config.yaml'), 'utf8'));
-            return config;
-        } catch (error) {
-            console.warn('Failed to read config.yaml');
-            return {};
-        }
+    if (CACHED_CONFIG) {
+        return CACHED_CONFIG;
     }
 
-    function getLegacyConfig() {
-        try {
-            console.log(color.yellow('WARNING: config.conf is deprecated. Please run "npm run postinstall" to convert to config.yaml'));
-            const config = require(path.join(process.cwd(), './config.conf'));
-            return config;
-        } catch (error) {
-            console.warn('Failed to read config.conf');
-            return {};
-        }
+    if (!fs.existsSync('./config.yaml')) {
+        console.error(color.red('No config file found. Please create a config.yaml file. The default config file can be found in the /default folder.'));
+        console.error(color.red('The program will now exit.'));
+        process.exit(1);
     }
 
-    if (fs.existsSync('./config.yaml')) {
-        return getNewConfig();
+    try {
+        const config = yaml.parse(fs.readFileSync(path.join(process.cwd(), './config.yaml'), 'utf8'));
+        CACHED_CONFIG = config;
+        return config;
+    } catch (error) {
+        console.warn('Failed to read config.yaml');
+        return {};
     }
-
-    if (fs.existsSync('./config.conf')) {
-        return getLegacyConfig();
-    }
-
-    console.error(color.red('No config file found. Please create a config.yaml file. The default config file can be found in the /default folder.'));
-    console.error(color.red('The program will now exit.'));
-    process.exit(1);
 }
 
 /**
@@ -58,6 +48,19 @@ function getConfig() {
 function getConfigValue(key, defaultValue = null) {
     const config = getConfig();
     return _.get(config, key, defaultValue);
+}
+
+/**
+ * Sets a value for the given key in the config object and writes it to the config.yaml file.
+ * @param {string} key Key to set
+ * @param {any} value Value to set
+ */
+function setConfigValue(key, value) {
+    // Reset cache so that the next getConfig call will read the updated config file
+    CACHED_CONFIG = null;
+    const config = getConfig();
+    _.set(config, key, value);
+    writeFileAtomicSync('./config.yaml', yaml.stringify(config));
 }
 
 /**
@@ -136,7 +139,7 @@ function getHexString(length) {
  * Extracts a file with given extension from an ArrayBuffer containing a ZIP archive.
  * @param {ArrayBuffer} archiveBuffer Buffer containing a ZIP archive
  * @param {string} fileExtension File extension to look for
- * @returns {Promise<Buffer>} Buffer containing the extracted file
+ * @returns {Promise<Buffer|null>} Buffer containing the extracted file. Null if the file was not found.
  */
 async function extractFileFromZipBuffer(archiveBuffer, fileExtension) {
     return await new Promise((resolve, reject) => yauzl.fromBuffer(Buffer.from(archiveBuffer), { lazyEntries: true }, (err, zipfile) => {
@@ -146,7 +149,7 @@ async function extractFileFromZipBuffer(archiveBuffer, fileExtension) {
 
         zipfile.readEntry();
         zipfile.on('entry', (entry) => {
-            if (entry.fileName.endsWith(fileExtension)) {
+            if (entry.fileName.endsWith(fileExtension) && !entry.fileName.startsWith('__MACOSX')) {
                 console.log(`Extracting ${entry.fileName}`);
                 zipfile.openReadStream(entry, (err, readStream) => {
                     if (err) {
@@ -168,6 +171,7 @@ async function extractFileFromZipBuffer(archiveBuffer, fileExtension) {
                 zipfile.readEntry();
             }
         });
+        zipfile.on('end', () => resolve(null));
     }));
 }
 
@@ -289,7 +293,14 @@ const color = {
     white: (mess) => color.byNum(mess, 37),
 };
 
+/**
+ * Gets a random UUIDv4 string.
+ * @returns {string} A UUIDv4 string
+ */
 function uuidv4() {
+    if ('randomUUID' in crypto) {
+        return crypto.randomUUID();
+    }
     return 'xxxxxxxx-xxxx-4xxx-yxxx-xxxxxxxxxxxx'.replace(/[xy]/g, function (c) {
         const r = Math.random() * 16 | 0;
         const v = c === 'x' ? r : (r & 0x3 | 0x8);
@@ -319,13 +330,18 @@ function tryParse(str) {
 }
 
 /**
- * Takes a path to a client-accessible file in the `public` folder and converts it to a relative URL segment that the
- * client can fetch it from. This involves stripping the `public/` prefix and always using `/` as the separator.
+ * Takes a path to a client-accessible file in the data folder and converts it to a relative URL segment that the
+ * client can fetch it from. This involves stripping the data root path prefix and always using `/` as the separator.
+ * @param {string} root The root directory of the user data folder.
  * @param {string} inputPath The path to be converted.
  * @returns The relative URL path from which the client can access the file.
  */
-function clientRelativePath(inputPath) {
-    return path.normalize(inputPath).split(path.sep).slice(1).join('/');
+function clientRelativePath(root, inputPath) {
+    if (!inputPath.startsWith(root)) {
+        throw new Error('Input path does not start with the root directory');
+    }
+
+    return inputPath.slice(root.length).split(path.sep).join('/');
 }
 
 /**
@@ -350,14 +366,16 @@ function generateTimestamp() {
 }
 
 /**
- * @param {string} prefix
+ * Remove old backups with the given prefix from a specified directory.
+ * @param {string} directory The root directory to remove backups from.
+ * @param {string} prefix File prefix to filter backups by.
  */
-function removeOldBackups(prefix) {
-    const MAX_BACKUPS = 25;
+function removeOldBackups(directory, prefix) {
+    const MAX_BACKUPS = Number(getConfigValue('numberOfBackups', 50));
 
-    let files = fs.readdirSync(DIRECTORIES.backups).filter(f => f.startsWith(prefix));
+    let files = fs.readdirSync(directory).filter(f => f.startsWith(prefix));
     if (files.length > MAX_BACKUPS) {
-        files = files.map(f => path.join(DIRECTORIES.backups, f));
+        files = files.map(f => path.join(directory, f));
         files.sort((a, b) => fs.statSync(a).mtimeMs - fs.statSync(b).mtimeMs);
 
         fs.rmSync(files[0]);
@@ -595,6 +613,7 @@ class Cache {
 module.exports = {
     getConfig,
     getConfigValue,
+    setConfigValue,
     getVersion,
     getBasicAuthHeader,
     extractFileFromZipBuffer,

@@ -12,6 +12,14 @@
     },
     "exclude": [
         "node_modules",
-        "**/node_modules/*"
+        "**/node_modules/*",
+        "public/lib",
+        "backups/*",
+        "data/*",
+        "**/dist/*",
+        "dist/*",
+        "cache/*",
+        "src/tokenizers/*",
+        "docker/*",
     ]
 }

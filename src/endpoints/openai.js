@@ -6,6 +6,7 @@ const fs = require('fs');
 const { jsonParser, urlencodedParser } = require('../express-common');
 const { getConfigValue, mergeObjectWithYaml, excludeKeysByYaml, trimV1 } = require('../util');
 const { setAdditionalHeaders } = require('../additional-headers');
+const { OPENROUTER_HEADERS } = require('../constants');
 
 const router = express.Router();
 
@@ -16,11 +17,11 @@ router.post('/caption-image', jsonParser, async (request, response) => {
         let bodyParams = {};
 
         if (request.body.api === 'openai' && !request.body.reverse_proxy) {
-            key = readSecret(SECRET_KEYS.OPENAI);
+            key = readSecret(request.user.directories, SECRET_KEYS.OPENAI);
         }
 
         if (request.body.api === 'openrouter' && !request.body.reverse_proxy) {
-            key = readSecret(SECRET_KEYS.OPENROUTER);
+            key = readSecret(request.user.directories, SECRET_KEYS.OPENROUTER);
         }
 
         if (request.body.reverse_proxy && request.body.proxy_password) {
@@ -28,21 +29,25 @@ router.post('/caption-image', jsonParser, async (request, response) => {
         }
 
         if (request.body.api === 'custom') {
-            key = readSecret(SECRET_KEYS.CUSTOM);
+            key = readSecret(request.user.directories, SECRET_KEYS.CUSTOM);
             mergeObjectWithYaml(bodyParams, request.body.custom_include_body);
             mergeObjectWithYaml(headers, request.body.custom_include_headers);
         }
 
         if (request.body.api === 'ooba') {
-            key = readSecret(SECRET_KEYS.OOBA);
+            key = readSecret(request.user.directories, SECRET_KEYS.OOBA);
             bodyParams.temperature = 0.1;
         }
 
         if (request.body.api === 'koboldcpp') {
-            key = readSecret(SECRET_KEYS.KOBOLDCPP);
+            key = readSecret(request.user.directories, SECRET_KEYS.KOBOLDCPP);
         }
 
-        if (!key && !request.body.reverse_proxy && ['custom', 'ooba', 'koboldcpp'].includes(request.body.api) === false) {
+        if (request.body.api === 'vllm') {
+            key = readSecret(request.user.directories, SECRET_KEYS.VLLM);
+        }
+
+        if (!key && !request.body.reverse_proxy && ['custom', 'ooba', 'koboldcpp', 'vllm'].includes(request.body.api) === false) {
             console.log('No key found for API', request.body.api);
             return response.sendStatus(400);
         }
@@ -80,7 +85,7 @@ router.post('/caption-image', jsonParser, async (request, response) => {
 
         if (request.body.api === 'openrouter') {
             apiUrl = 'https://openrouter.ai/api/v1/chat/completions';
-            headers['HTTP-Referer'] = request.headers.referer;
+            Object.assign(headers, OPENROUTER_HEADERS);
         }
 
         if (request.body.api === 'openai') {
@@ -109,7 +114,7 @@ router.post('/caption-image', jsonParser, async (request, response) => {
             });
         }
 
-        if (request.body.api === 'koboldcpp') {
+        if (request.body.api === 'koboldcpp' || request.body.api === 'vllm') {
             apiUrl = `${trimV1(request.body.server_url)}/v1/chat/completions`;
         }
 
@@ -150,7 +155,7 @@ router.post('/caption-image', jsonParser, async (request, response) => {
 
 router.post('/transcribe-audio', urlencodedParser, async (request, response) => {
     try {
-        const key = readSecret(SECRET_KEYS.OPENAI);
+        const key = readSecret(request.user.directories, SECRET_KEYS.OPENAI);
 
         if (!key) {
             console.log('No OpenAI key found');
@@ -198,7 +203,7 @@ router.post('/transcribe-audio', urlencodedParser, async (request, response) => 
 
 router.post('/generate-voice', jsonParser, async (request, response) => {
     try {
-        const key = readSecret(SECRET_KEYS.OPENAI);
+        const key = readSecret(request.user.directories, SECRET_KEYS.OPENAI);
 
         if (!key) {
             console.log('No OpenAI key found');
@@ -237,7 +242,7 @@ router.post('/generate-voice', jsonParser, async (request, response) => {
 
 router.post('/generate-image', jsonParser, async (request, response) => {
     try {
-        const key = readSecret(SECRET_KEYS.OPENAI);
+        const key = readSecret(request.user.directories, SECRET_KEYS.OPENAI);
 
         if (!key) {
             console.log('No OpenAI key found');

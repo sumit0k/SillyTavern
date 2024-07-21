@@ -39,13 +39,14 @@ router.post('/caption-image', jsonParser, async (request, response) => {
             headers: {
                 'Content-Type': 'application/json',
                 'anthropic-version': '2023-06-01',
-                'x-api-key': request.body.reverse_proxy ? request.body.proxy_password : readSecret(SECRET_KEYS.CLAUDE),
+                'x-api-key': request.body.reverse_proxy ? request.body.proxy_password : readSecret(request.user.directories, SECRET_KEYS.CLAUDE),
             },
             timeout: 0,
         });
 
         if (!result.ok) {
-            console.log(`Claude API returned error: ${result.status} ${result.statusText}`);
+            const text = await result.text();
+            console.log(`Claude API returned error: ${result.status} ${result.statusText}`, text);
             return response.status(result.status).send({ error: true });
         }
 

@@ -1,4 +1,4 @@
-import { characters, getCharacters, handleDeleteCharacter, callPopup, characterGroupOverlay } from '../script.js';
+import { characterGroupOverlay } from '../script.js';
 import { BulkEditOverlay, BulkEditOverlayState } from './BulkEditOverlay.js';
 
 
@@ -70,15 +70,6 @@ function onSelectAllButtonClick() {
 }
 
 /**
- * Deletes the character with the given chid.
- *
- * @param {string} this_chid - The chid of the character to delete.
- */
-async function deleteCharacter(this_chid) {
-    await handleDeleteCharacter('del_ch', this_chid, false);
-}
-
-/**
  * Deletes all characters that have been selected via the bulk checkboxes.
  */
 async function onDeleteButtonClick() {
@@ -103,6 +94,9 @@ function enableBulkSelect() {
         });
         $(el).prepend(checkbox);
     });
+    $('#rm_print_characters_block.group_overlay_mode_select .bogus_folder_select, #rm_print_characters_block.group_overlay_mode_select .group_select')
+        .addClass('disabled');
+
     $('#rm_print_characters_block').addClass('bulk_select');
     // We also need to disable the default click event for the character_select divs
     $(document).on('click', '.bulk_select_checkbox', function (event) {
@@ -115,6 +109,8 @@ function enableBulkSelect() {
  */
 function disableBulkSelect() {
     $('.bulk_select_checkbox').remove();
+    $('#rm_print_characters_block.group_overlay_mode_select .bogus_folder_select, #rm_print_characters_block.group_overlay_mode_select .group_select')
+        .removeClass('disabled');
     $('#rm_print_characters_block').removeClass('bulk_select');
 }
 

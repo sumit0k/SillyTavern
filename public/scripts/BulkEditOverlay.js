@@ -4,7 +4,6 @@ import {
     characterGroupOverlay,
     callPopup,
     characters,
-    deleteCharacter,
     event_types,
     eventSource,
     getCharacters,
@@ -13,6 +12,7 @@ import {
     buildAvatarList,
     characterToEntity,
     printCharactersDebounced,
+    deleteCharacter,
 } from '../script.js';
 
 import { favsToHotswap } from './RossAscends-mods.js';
@@ -115,24 +115,7 @@ class CharacterContextMenu {
     static delete = async (characterId, deleteChats = false) => {
         const character = CharacterContextMenu.#getCharacter(characterId);
 
-        return fetch('/api/characters/delete', {
-            method: 'POST',
-            headers: getRequestHeaders(),
-            body: JSON.stringify({ avatar_url: character.avatar, delete_chats: deleteChats }),
-            cache: 'no-cache',
-        }).then(response => {
-            if (response.ok) {
-                eventSource.emit(event_types.CHARACTER_DELETED, { id: characterId, character: character });
-                return deleteCharacter(character.name, character.avatar, false).then(() => {
-                    if (deleteChats) getPastCharacterChats(characterId).then(pastChats => {
-                        for (const chat of pastChats) {
-                            const name = chat.file_name.replace('.jsonl', '');
-                            eventSource.emit(event_types.CHAT_DELETED, name);
-                        }
-                    });
-                });
-            }
-        });
+        await deleteCharacter(character.avatar, { deleteChats: deleteChats });
     };
 
     static #getCharacter = (characterId) => characters[characterId] ?? null;
@@ -266,7 +249,7 @@ class BulkTagPopupHandler {
         printTagList($('#bulkTagList'), { tags: () => this.getMutualTags(), tagOptions: { removable: true } });
 
         // Tag input with resolvable list for the mutual tags to get redrawn, so that newly added tags get sorted correctly
-        createTagInput('#bulkTagInput', '#bulkTagList', { tags: () => this.getMutualTags(), tagOptions: { removable: true }});
+        createTagInput('#bulkTagInput', '#bulkTagList', { tags: () => this.getMutualTags(), tagOptions: { removable: true } });
 
         document.querySelector('#bulk_tag_popup_reset').addEventListener('click', this.resetTags.bind(this));
         document.querySelector('#bulk_tag_popup_remove_mutual').addEventListener('click', this.removeMutual.bind(this));
@@ -291,7 +274,7 @@ class BulkTagPopupHandler {
         // Find mutual tags for multiple characters
         const allTags = this.characterIds.map(cid => getTagsList(getTagKeyForEntity(cid)));
         const mutualTags = allTags.reduce((mutual, characterTags) =>
-            mutual.filter(tag => characterTags.some(cTag => cTag.id === tag.id))
+            mutual.filter(tag => characterTags.some(cTag => cTag.id === tag.id)),
         );
 
         this.currentMutualTags = mutualTags.sort(compareTagsForSort);
@@ -587,7 +570,7 @@ class BulkEditOverlay {
             this.container.removeEventListener('mouseup', cancelHold);
             this.container.removeEventListener('touchend', cancelHold);
         },
-            BulkEditOverlay.longPressDelay);
+        BulkEditOverlay.longPressDelay);
     };
 
     handleLongPressEnd = (event) => {
@@ -694,7 +677,7 @@ class BulkEditOverlay {
         } else {
             character.classList.remove(BulkEditOverlay.selectedClass);
             if (legacyBulkEditCheckbox) legacyBulkEditCheckbox.checked = false;
-            this.#selectedCharacters = this.#selectedCharacters.filter(item => String(characterId) !== item)
+            this.#selectedCharacters = this.#selectedCharacters.filter(item => String(characterId) !== item);
         }
 
         this.updateSelectedCount();
@@ -816,7 +799,7 @@ class BulkEditOverlay {
                     <span>Also delete the chat files</span>
                 </label>
             </div>`;
-    }
+    };
 
     /**
      * Request user input before concurrently handle deletion

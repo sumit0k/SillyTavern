@@ -1,5 +1,5 @@
-import { getStringHash, debounce, waitUntilCondition, extractAllWords, delay } from '../../utils.js';
-import { getContext, getApiUrl, extension_settings, doExtrasFetch, modules, renderExtensionTemplate } from '../../extensions.js';
+import { getStringHash, debounce, waitUntilCondition, extractAllWords } from '../../utils.js';
+import { getContext, getApiUrl, extension_settings, doExtrasFetch, modules, renderExtensionTemplateAsync } from '../../extensions.js';
 import {
     activateSendButtons,
     deactivateSendButtons,
@@ -11,15 +11,20 @@ import {
     generateQuietPrompt,
     is_send_press,
     saveSettingsDebounced,
-    substituteParams,
+    substituteParamsExtended,
     generateRaw,
     getMaxContextSize,
 } from '../../../script.js';
 import { is_group_generating, selected_group } from '../../group-chats.js';
-import { registerSlashCommand } from '../../slash-commands.js';
 import { loadMovingUIState } from '../../power-user.js';
 import { dragElement } from '../../RossAscends-mods.js';
-import { getTextTokens, getTokenCount, tokenizers } from '../../tokenizers.js';
+import { getTextTokens, getTokenCountAsync, tokenizers } from '../../tokenizers.js';
+import { debounce_timeout } from '../../constants.js';
+import { SlashCommandParser } from '../../slash-commands/SlashCommandParser.js';
+import { SlashCommand } from '../../slash-commands/SlashCommand.js';
+import { ARGUMENT_TYPE, SlashCommandArgument, SlashCommandNamedArgument } from '../../slash-commands/SlashCommandArgument.js';
+import { resolveVariable } from '../../variables.js';
+import { commonEnumProviders } from '../../slash-commands/SlashCommandCommonEnumsProvider.js';
 export { MODULE_NAME };
 
 const MODULE_NAME = '1_memory';
@@ -39,14 +44,13 @@ const formatMemoryValue = function (value) {
     value = value.trim();
 
     if (extension_settings.memory.template) {
-        let result = extension_settings.memory.template.replace(/{{summary}}/i, value);
-        return substituteParams(result);
+        return substituteParamsExtended(extension_settings.memory.template, { summary: value });
     } else {
         return `Summary: ${value}`;
     }
 };
 
-const saveChatDebounced = debounce(() => getContext().saveChat(), 2000);
+const saveChatDebounced = debounce(() => getContext().saveChat(), debounce_timeout.relaxed);
 
 const summary_sources = {
     'extras': 'extras',
@@ -129,7 +133,7 @@ async function onPromptForceWordsAutoClick() {
     const allMessages = chat.filter(m => !m.is_system && m.mes).map(m => m.mes);
     const messagesWordCount = allMessages.map(m => extractAllWords(m)).flat().length;
     const averageMessageWordCount = messagesWordCount / allMessages.length;
-    const tokensPerWord = getTokenCount(allMessages.join('\n')) / messagesWordCount;
+    const tokensPerWord = await getTokenCountAsync(allMessages.join('\n')) / messagesWordCount;
     const wordsPerToken = 1 / tokensPerWord;
     const maxPromptLengthWords = Math.round(maxPromptLength * wordsPerToken);
     // How many words should pass so that messages will start be dropped out of context;
@@ -166,11 +170,11 @@ async function onPromptIntervalAutoClick() {
     const chat = context.chat;
     const allMessages = chat.filter(m => !m.is_system && m.mes).map(m => m.mes);
     const messagesWordCount = allMessages.map(m => extractAllWords(m)).flat().length;
-    const messagesTokenCount = getTokenCount(allMessages.join('\n'));
+    const messagesTokenCount = await getTokenCountAsync(allMessages.join('\n'));
     const tokensPerWord = messagesTokenCount / messagesWordCount;
     const averageMessageTokenCount = messagesTokenCount / allMessages.length;
     const targetSummaryTokens = Math.round(extension_settings.memory.promptWords * tokensPerWord);
-    const promptTokens = getTokenCount(extension_settings.memory.prompt);
+    const promptTokens = await getTokenCountAsync(extension_settings.memory.prompt);
     const promptAllowance = maxPromptLength - promptTokens - targetSummaryTokens;
     const maxMessagesPerSummary = extension_settings.memory.maxMessagesPerRequest || 0;
     const averageMessagesPerPrompt = Math.floor(promptAllowance / averageMessageTokenCount);
@@ -415,7 +419,7 @@ async function forceSummarizeChat() {
     console.log(`Skipping WIAN? ${skipWIAN}`);
     if (!context.chatId) {
         toastr.warning('No chat selected');
-        return;
+        return '';
     }
 
     toastr.info('Summarizing chat...', 'Please wait');
@@ -423,7 +427,42 @@ async function forceSummarizeChat() {
 
     if (!value) {
         toastr.warning('Failed to summarize chat');
-        return;
+        return '';
+    }
+
+    return value;
+}
+
+/**
+ * Callback for the summarize command.
+ * @param {object} args Command arguments
+ * @param {string} text Text to summarize
+ */
+async function summarizeCallback(args, text) {
+    text = text.trim();
+
+    // Using forceSummarizeChat to summarize the current chat
+    if (!text) {
+        return await forceSummarizeChat();
+    }
+
+    const source = args.source || extension_settings.memory.source;
+    const prompt = substituteParamsExtended((args.prompt || extension_settings.memory.prompt), { words: extension_settings.memory.promptWords });
+
+    try {
+        switch (source) {
+            case summary_sources.extras:
+                return await callExtrasSummarizeAPI(text);
+            case summary_sources.main:
+                return await generateRaw(text, '', false, false, prompt, extension_settings.memory.overrideResponseLength);
+            default:
+                toastr.warning('Invalid summarization source specified');
+                return '';
+        }
+    } catch (error) {
+        toastr.error(String(error), 'Failed to summarize text');
+        console.log(error);
+        return '';
     }
 }
 
@@ -495,7 +534,7 @@ async function summarizeChatMain(context, force, skipWIAN) {
     }
 
     console.log('Summarizing chat, messages since last summary: ' + messagesSinceLastSummary, 'words since last summary: ' + wordsSinceLastSummary);
-    const prompt = extension_settings.memory.prompt?.replace(/{{words}}/gi, extension_settings.memory.promptWords);
+    const prompt = substituteParamsExtended(extension_settings.memory.prompt, { words: extension_settings.memory.promptWords });
 
     if (!prompt) {
         console.debug('Summarization prompt is empty. Skipping summarization.');
@@ -603,8 +642,7 @@ async function getRawSummaryPrompt(context, prompt) {
         const entry = `${message.name}:\n${message.mes}`;
         chatBuffer.push(entry);
 
-        const tokens = getTokenCount(getMemoryString(true), PADDING);
-        await delay(1);
+        const tokens = await getTokenCountAsync(getMemoryString(true), PADDING);
 
         if (tokens > PROMPT_SIZE) {
             chatBuffer.pop();
@@ -668,37 +706,18 @@ async function summarizeChatExtras(context) {
     // perform the summarization API call
     try {
         inApiCall = true;
-        const url = new URL(getApiUrl());
-        url.pathname = '/api/summarize';
+        const summary = await callExtrasSummarizeAPI(resultingString);
+        const newContext = getContext();
 
-        const apiResult = await doExtrasFetch(url, {
-            method: 'POST',
-            headers: {
-                'Content-Type': 'application/json',
-                'Bypass-Tunnel-Reminder': 'bypass',
-            },
-            body: JSON.stringify({
-                text: resultingString,
-                params: {},
-            }),
-        });
-
-        if (apiResult.ok) {
-            const data = await apiResult.json();
-            const summary = data.summary;
-
-            const newContext = getContext();
-
-            // something changed during summarization request
-            if (newContext.groupId !== context.groupId
-                || newContext.chatId !== context.chatId
-                || (!newContext.groupId && (newContext.characterId !== context.characterId))) {
-                console.log('Context changed, summary discarded');
-                return;
-            }
-
-            setMemoryContext(summary, true);
+        // something changed during summarization request
+        if (newContext.groupId !== context.groupId
+            || newContext.chatId !== context.chatId
+            || (!newContext.groupId && (newContext.characterId !== context.characterId))) {
+            console.log('Context changed, summary discarded');
+            return;
         }
+
+        setMemoryContext(summary, true);
     }
     catch (error) {
         console.log(error);
@@ -706,6 +725,40 @@ async function summarizeChatExtras(context) {
     finally {
         inApiCall = false;
     }
+}
+
+/**
+ * Call the Extras API to summarize the provided text.
+ * @param {string} text Text to summarize
+ * @returns {Promise<string>} Summarized text
+ */
+async function callExtrasSummarizeAPI(text) {
+    if (!modules.includes('summarize')) {
+        throw new Error('Summarize module is not enabled in Extras API');
+    }
+
+    const url = new URL(getApiUrl());
+    url.pathname = '/api/summarize';
+
+    const apiResult = await doExtrasFetch(url, {
+        method: 'POST',
+        headers: {
+            'Content-Type': 'application/json',
+            'Bypass-Tunnel-Reminder': 'bypass',
+        },
+        body: JSON.stringify({
+            text: text,
+            params: {},
+        }),
+    });
+
+    if (apiResult.ok) {
+        const data = await apiResult.json();
+        const summary = data.summary;
+        return summary;
+    }
+
+    throw new Error('Extras API call failed');
 }
 
 function onMemoryRestoreClick() {
@@ -751,10 +804,7 @@ function setMemoryContext(value, saveToMessage, index = null) {
     const context = getContext();
     context.setExtensionPrompt(MODULE_NAME, formatMemoryValue(value), extension_settings.memory.position, extension_settings.memory.depth, false, extension_settings.memory.role);
     $('#memory_contents').val(value);
-    console.log('Summary set to: ' + value);
-    console.debug('Position: ' + extension_settings.memory.position);
-    console.debug('Depth: ' + extension_settings.memory.depth);
-    console.debug('Role: ' + extension_settings.memory.role);
+    console.log('Summary set to: ' + value, 'Position: ' + extension_settings.memory.position, 'Depth: ' + extension_settings.memory.depth, 'Role: ' + extension_settings.memory.role);
 
     if (saveToMessage && context.chat.length) {
         const idx = index ?? context.chat.length - 2;
@@ -847,10 +897,10 @@ function setupListeners() {
     });
 }
 
-jQuery(function () {
-    function addExtensionControls() {
-        const settingsHtml = renderExtensionTemplate('memory', 'settings', { defaultSettings });
-        $('#extensions_settings2').append(settingsHtml);
+jQuery(async function () {
+    async function addExtensionControls() {
+        const settingsHtml = await renderExtensionTemplateAsync('memory', 'settings', { defaultSettings });
+        $('#summarize_container').append(settingsHtml);
         setupListeners();
         $('#summaryExtensionPopoutButton').off('click').on('click', function (e) {
             doPopout(e);
@@ -858,12 +908,29 @@ jQuery(function () {
         });
     }
 
-    addExtensionControls();
+    await addExtensionControls();
     loadSettings();
     eventSource.on(event_types.MESSAGE_RECEIVED, onChatEvent);
     eventSource.on(event_types.MESSAGE_DELETED, onChatEvent);
     eventSource.on(event_types.MESSAGE_EDITED, onChatEvent);
     eventSource.on(event_types.MESSAGE_SWIPED, onChatEvent);
     eventSource.on(event_types.CHAT_CHANGED, onChatEvent);
-    registerSlashCommand('summarize', forceSummarizeChat, [], '– forces the summarization of the current chat using the Main API', true, true);
+    SlashCommandParser.addCommandObject(SlashCommand.fromProps({
+        name: 'summarize',
+        callback: summarizeCallback,
+        namedArgumentList: [
+            new SlashCommandNamedArgument('source', 'API to use for summarization', [ARGUMENT_TYPE.STRING], false, false, '', ['main', 'extras']),
+            SlashCommandNamedArgument.fromProps({
+                name: 'prompt',
+                description: 'prompt to use for summarization',
+                typeList: [ARGUMENT_TYPE.STRING],
+                defaultValue: '',
+            }),
+        ],
+        unnamedArgumentList: [
+            new SlashCommandArgument('text to summarize', [ARGUMENT_TYPE.STRING], false, false, ''),
+        ],
+        helpString: 'Summarizes the given text. If no text is provided, the current chat will be summarized. Can specify the source and the prompt to use.',
+        returns: ARGUMENT_TYPE.STRING,
+    }));
 });

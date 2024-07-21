@@ -9,9 +9,12 @@ import {
 } from '../script.js';
 import { selected_group } from './group-chats.js';
 import { extension_settings, getContext, saveMetadataDebounced } from './extensions.js';
-import { registerSlashCommand } from './slash-commands.js';
 import { getCharaFilename, debounce, delay } from './utils.js';
-import { getTokenCount } from './tokenizers.js';
+import { getTokenCountAsync } from './tokenizers.js';
+import { debounce_timeout } from './constants.js';
+import { SlashCommandParser } from './slash-commands/SlashCommandParser.js';
+import { SlashCommand } from './slash-commands/SlashCommand.js';
+import { ARGUMENT_TYPE, SlashCommandArgument } from './slash-commands/SlashCommandArgument.js';
 export { MODULE_NAME as NOTE_MODULE_NAME };
 
 const MODULE_NAME = '2_floating_prompt'; // <= Deliberate, for sorting lower than memory
@@ -35,6 +38,7 @@ const chara_note_position = {
 function setNoteTextCommand(_, text) {
     $('#extension_floating_prompt').val(text).trigger('input');
     toastr.success('Author\'s Note text updated');
+    return '';
 }
 
 function setNoteDepthCommand(_, text) {
@@ -47,6 +51,7 @@ function setNoteDepthCommand(_, text) {
 
     $('#extension_floating_depth').val(Math.abs(value)).trigger('input');
     toastr.success('Author\'s Note depth updated');
+    return '';
 }
 
 function setNoteIntervalCommand(_, text) {
@@ -59,6 +64,7 @@ function setNoteIntervalCommand(_, text) {
 
     $('#extension_floating_interval').val(Math.abs(value)).trigger('input');
     toastr.success('Author\'s Note frequency updated');
+    return '';
 }
 
 function setNotePositionCommand(_, text) {
@@ -76,6 +82,7 @@ function setNotePositionCommand(_, text) {
 
     $(`input[name="extension_floating_position"][value="${position}"]`).prop('checked', true).trigger('input');
     toastr.info('Author\'s Note position updated');
+    return '';
 }
 
 function updateSettings() {
@@ -84,9 +91,9 @@ function updateSettings() {
     setFloatingPrompt();
 }
 
-const setMainPromptTokenCounterDebounced = debounce((value) => $('#extension_floating_prompt_token_counter').text(getTokenCount(value)), 1000);
-const setCharaPromptTokenCounterDebounced = debounce((value) => $('#extension_floating_chara_token_counter').text(getTokenCount(value)), 1000);
-const setDefaultPromptTokenCounterDebounced = debounce((value) => $('#extension_floating_default_token_counter').text(getTokenCount(value)), 1000);
+const setMainPromptTokenCounterDebounced = debounce(async (value) => $('#extension_floating_prompt_token_counter').text(await getTokenCountAsync(value)), debounce_timeout.relaxed);
+const setCharaPromptTokenCounterDebounced = debounce(async (value) => $('#extension_floating_chara_token_counter').text(await getTokenCountAsync(value)), debounce_timeout.relaxed);
+const setDefaultPromptTokenCounterDebounced = debounce(async (value) => $('#extension_floating_default_token_counter').text(await getTokenCountAsync(value)), debounce_timeout.relaxed);
 
 async function onExtensionFloatingPromptInput() {
     chat_metadata[metadata_keys.prompt] = $(this).val();
@@ -394,7 +401,7 @@ function onANMenuItemClick() {
     }
 }
 
-function onChatChanged() {
+async function onChatChanged() {
     loadSettings();
     setFloatingPrompt();
     const context = getContext();
@@ -402,7 +409,7 @@ function onChatChanged() {
     // Disable the chara note if in a group
     $('#extension_floating_chara').prop('disabled', context.groupId ? true : false);
 
-    const tokenCounter1 = chat_metadata[metadata_keys.prompt] ? getTokenCount(chat_metadata[metadata_keys.prompt]) : 0;
+    const tokenCounter1 = chat_metadata[metadata_keys.prompt] ? await getTokenCountAsync(chat_metadata[metadata_keys.prompt]) : 0;
     $('#extension_floating_prompt_token_counter').text(tokenCounter1);
 
     let tokenCounter2;
@@ -410,15 +417,13 @@ function onChatChanged() {
         const charaNote = extension_settings.note.chara.find((e) => e.name === getCharaFilename());
 
         if (charaNote) {
-            tokenCounter2 = getTokenCount(charaNote.prompt);
+            tokenCounter2 = await getTokenCountAsync(charaNote.prompt);
         }
     }
 
-    if (tokenCounter2) {
-        $('#extension_floating_chara_token_counter').text(tokenCounter2);
-    }
+    $('#extension_floating_chara_token_counter').text(tokenCounter2 || 0);
 
-    const tokenCounter3 = extension_settings.note.default ? getTokenCount(extension_settings.note.default) : 0;
+    const tokenCounter3 = extension_settings.note.default ? await getTokenCountAsync(extension_settings.note.default) : 0;
     $('#extension_floating_default_token_counter').text(tokenCounter3);
 }
 
@@ -456,9 +461,59 @@ export function initAuthorsNote() {
     });
     $('#option_toggle_AN').on('click', onANMenuItemClick);
 
-    registerSlashCommand('note', setNoteTextCommand, [], '<span class=\'monospace\'>(text)</span> – sets an author\'s note for the currently selected chat', true, true);
-    registerSlashCommand('depth', setNoteDepthCommand, [], '<span class=\'monospace\'>(number)</span> – sets an author\'s note depth for in-chat positioning', true, true);
-    registerSlashCommand('freq', setNoteIntervalCommand, ['interval'], '<span class=\'monospace\'>(number)</span> – sets an author\'s note insertion frequency', true, true);
-    registerSlashCommand('pos', setNotePositionCommand, ['position'], '(<span class=\'monospace\'>chat</span> or <span class=\'monospace\'>scenario</span>) – sets an author\'s note position', true, true);
+    SlashCommandParser.addCommandObject(SlashCommand.fromProps({ name: 'note',
+        callback: setNoteTextCommand,
+        unnamedArgumentList: [
+            new SlashCommandArgument(
+                'text', [ARGUMENT_TYPE.STRING], true,
+            ),
+        ],
+        helpString: `
+            <div>
+                Sets an author's note for the currently selected chat.
+            </div>
+        `,
+    }));
+    SlashCommandParser.addCommandObject(SlashCommand.fromProps({ name: 'depth',
+        callback: setNoteDepthCommand,
+        unnamedArgumentList: [
+            new SlashCommandArgument(
+                'number', [ARGUMENT_TYPE.NUMBER], true,
+            ),
+        ],
+        helpString: `
+            <div>
+                Sets an author's note depth for in-chat positioning.
+            </div>
+        `,
+    }));
+    SlashCommandParser.addCommandObject(SlashCommand.fromProps({ name: 'freq',
+        callback: setNoteIntervalCommand,
+        namedArgumentList: [],
+        unnamedArgumentList: [
+            new SlashCommandArgument(
+                'number', [ARGUMENT_TYPE.NUMBER], true,
+            ),
+        ],
+        helpString: `
+            <div>
+                Sets an author's note insertion frequency.
+            </div>
+        `,
+    }));
+    SlashCommandParser.addCommandObject(SlashCommand.fromProps({ name: 'pos',
+        callback: setNotePositionCommand,
+        namedArgumentList: [],
+        unnamedArgumentList: [
+            new SlashCommandArgument(
+                'position', [ARGUMENT_TYPE.STRING], true, false, null, ['chat', 'scenario'],
+            ),
+        ],
+        helpString: `
+            <div>
+                Sets an author's note position.
+            </div>
+        `,
+    }));
     eventSource.on(event_types.CHAT_CHANGED, onChatChanged);
 }

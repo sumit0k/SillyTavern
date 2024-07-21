@@ -160,7 +160,7 @@ async function* parseStreamData(json) {
         return;
     }
     // llama.cpp?
-    else if (typeof json.content === 'string' && json.content.length > 0) {
+    else if (typeof json.content === 'string' && json.content.length > 0 && json.object !== 'chat.completion.chunk') {
         for (let i = 0; i < json.content.length; i++) {
             const str = json.content[i];
             yield {
@@ -174,7 +174,7 @@ async function* parseStreamData(json) {
     else if (Array.isArray(json.choices)) {
         const isNotPrimary = json?.choices?.[0]?.index > 0;
         if (isNotPrimary || json.choices.length === 0) {
-            return null;
+            throw new Error('Not a primary swipe');
         }
 
         if (typeof json.choices[0].text === 'string' && json.choices[0].text.length > 0) {
@@ -271,7 +271,7 @@ export class SmoothEventSourceStream extends EventSourceStream {
                         hasFocus && await eventSource.emit(event_types.SMOOTH_STREAM_TOKEN_RECEIVED, parsed.chunk);
                     }
                 } catch (error) {
-                    console.error('Smooth Streaming parsing error', error);
+                    console.debug('Smooth Streaming parsing error', error);
                     controller.enqueue(event);
                 }
             },

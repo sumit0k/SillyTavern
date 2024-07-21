@@ -86,6 +86,10 @@
     margin: 5px;
 }
 
+.marginLeft5 {
+    margin-left: 5px;
+}
+
 .overflowYAuto {
     overflow-y: auto;
 }
@@ -96,6 +100,14 @@
 
 .justifySpaceBetween {
     justify-content: space-between;
+}
+
+.justifySpaceEvenly {
+    justify-content: space-evenly;
+}
+
+.justifySpaceAround {
+    justify-content: space-around;
 }
 
 .alignitemsflexstart {
@@ -208,7 +220,7 @@
 }
 
 .monospace {
-    font-family: monospace;
+    font-family: var(--monoFontFamily);
 }
 
 .expander {
@@ -249,6 +261,10 @@
     flex-basis: 48%
 }
 
+.flexBasis30p {
+    flex-basis: 30%;
+}
+
 .flex-container {
     display: flex;
     gap: 5px;
@@ -274,6 +290,14 @@
 .flexnowrap,
 .flexNoWrap {
     flex-wrap: nowrap;
+}
+
+.inline-flex {
+    display: inline-flex;
+}
+
+.inline-block {
+    display: inline-block;
 }
 
 .alignitemscenter,
@@ -332,6 +356,10 @@
     margin-right: 5px;
 }
 
+.margin-r2 {
+    margin-right: 2px;
+}
+
 .flex0 {
     flex: 0;
 }
@@ -342,6 +370,14 @@
 
 .flex2 {
     flex: 2 !important;
+}
+
+.flex3 {
+    flex: 3;
+}
+
+.flex4 {
+    flex: 4;
 }
 
 .flexFlowColumn {
@@ -483,6 +519,10 @@ textarea:disabled {
     font-size: calc(var(--mainFontSize) * 1.2) !important;
 }
 
+.fontsize90p {
+    font-size: calc(var(--mainFontSize) * 0.9) !important;
+}
+
 .fontsize80p {
     font-size: calc(var(--mainFontSize) * 0.8) !important;
 }
@@ -543,4 +583,24 @@ textarea:disabled {
     height: 30px;
     text-align: center;
     padding: 5px;
+}
+
+ul.li-padding-b-1 li {
+    padding-bottom: 1em;
+}
+
+ul.li-padding-b-2 li {
+    padding-bottom: 2em;
+}
+
+ul.li-padding-b-5 li {
+    padding-bottom: 5em;
+}
+
+ul.li-padding-bot5 li {
+    padding-bottom: 5px;
+}
+
+ul.li-padding-bot10 li {
+    padding-bottom: 10px;
 }
