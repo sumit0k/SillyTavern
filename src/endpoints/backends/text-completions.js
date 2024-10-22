@@ -5,7 +5,7 @@ const Readable = require('stream').Readable;
 
 const { jsonParser } = require('../../express-common');
 const { TEXTGEN_TYPES, TOGETHERAI_KEYS, OLLAMA_KEYS, INFERMATICAI_KEYS, OPENROUTER_KEYS, VLLM_KEYS, DREAMGEN_KEYS, FEATHERLESS_KEYS } = require('../../constants');
-const { forwardFetchResponse, trimV1 } = require('../../util');
+const { forwardFetchResponse, trimV1, getConfigValue } = require('../../util');
 const { setAdditionalHeaders } = require('../../additional-headers');
 
 const router = express.Router();
@@ -137,6 +137,7 @@ router.post('/status', jsonParser, async function (request, response) {
         }
 
         const modelsReply = await fetch(url, args);
+        const isPossiblyLmStudio = modelsReply.headers.get('x-powered-by') === 'Express';
 
         if (!modelsReply.ok) {
             console.log('Models endpoint is offline.');
@@ -174,7 +175,7 @@ router.post('/status', jsonParser, async function (request, response) {
         // Set result to the first model ID
         result = modelIds[0] || 'Valid';
 
-        if (apiType === TEXTGEN_TYPES.OOBA) {
+        if (apiType === TEXTGEN_TYPES.OOBA && !isPossiblyLmStudio) {
             try {
                 const modelInfoUrl = baseUrl + '/v1/internal/model/info';
                 const modelInfoReply = await fetch(modelInfoUrl, args);
@@ -185,6 +186,7 @@ router.post('/status', jsonParser, async function (request, response) {
 
                     const modelName = modelInfo?.model_name;
                     result = modelName || result;
+                    response.setHeader('x-supports-tokenization', 'true');
                 }
             } catch (error) {
                 console.error(`Failed to get Ooba model info: ${error}`);
@@ -309,7 +311,7 @@ router.post('/generate', jsonParser, async function (request, response) {
         if (request.body.api_type === TEXTGEN_TYPES.OPENROUTER) {
             if (Array.isArray(request.body.provider) && request.body.provider.length > 0) {
                 request.body.provider = {
-                    allow_fallbacks: true,
+                    allow_fallbacks: request.body.allow_fallbacks ?? true,
                     order: request.body.provider,
                 };
             } else {
@@ -325,11 +327,12 @@ router.post('/generate', jsonParser, async function (request, response) {
         }
 
         if (request.body.api_type === TEXTGEN_TYPES.OLLAMA) {
+            const keepAlive = getConfigValue('ollama.keepAlive', -1);
             args.body = JSON.stringify({
                 model: request.body.model,
                 prompt: request.body.prompt,
                 stream: request.body.stream ?? false,
-                keep_alive: -1,
+                keep_alive: keepAlive,
                 raw: true,
                 options: _.pickBy(request.body, (_, key) => OLLAMA_KEYS.includes(key)),
             });
@@ -374,7 +377,9 @@ router.post('/generate', jsonParser, async function (request, response) {
             }
         }
     } catch (error) {
-        let value = { error: true, status: error?.status, response: error?.statusText };
+        const status = error?.status ?? error?.code ?? 'UNKNOWN';
+        const text = error?.error ?? error?.statusText ?? error?.message ?? 'Unknown error on /generate endpoint';
+        let value = { error: true, status: status, response: text };
         console.log('Endpoint error:', error);
 
         if (!response.headersSent) {
@@ -588,7 +593,53 @@ llamacpp.post('/slots', jsonParser, async function (request, response) {
     }
 });
 
+const tabby = express.Router();
+
+tabby.post('/download', jsonParser, async function (request, response) {
+    try {
+        const baseUrl = String(request.body.api_server).replace(/\/$/, '');
+
+        const args = {
+            method: 'POST',
+            headers: { 'Content-Type': 'application/json' },
+            body: JSON.stringify(request.body),
+            timeout: 0,
+        };
+
+        setAdditionalHeaders(request, args, baseUrl);
+
+        // Check key permissions
+        const permissionResponse = await fetch(`${baseUrl}/v1/auth/permission`, {
+            headers: args.headers,
+        });
+
+        if (permissionResponse.ok) {
+            const permissionJson = await permissionResponse.json();
+
+            if (permissionJson['permission'] !== 'admin') {
+                return response.status(403).send({ error: true });
+            }
+        } else {
+            console.log('API Permission error:', permissionResponse.status, permissionResponse.statusText);
+            return response.status(permissionResponse.status).send({ error: true });
+        }
+
+        const fetchResponse = await fetch(`${baseUrl}/v1/download`, args);
+
+        if (!fetchResponse.ok) {
+            console.log('Download error:', fetchResponse.status, fetchResponse.statusText);
+            return response.status(fetchResponse.status).send({ error: true });
+        }
+
+        return response.send({ ok: true });
+    } catch (error) {
+        console.error(error);
+        return response.status(500);
+    }
+});
+
 router.use('/ollama', ollama);
 router.use('/llamacpp', llamacpp);
+router.use('/tabby', tabby);
 
 module.exports = { router };

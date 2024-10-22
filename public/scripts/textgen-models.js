@@ -1,7 +1,9 @@
 import { isMobile } from './RossAscends-mods.js';
-import { amount_gen, callPopup, eventSource, event_types, getRequestHeaders, max_context, setGenerationParamsFromPreset } from '../script.js';
+import { amount_gen, callPopup, eventSource, event_types, getRequestHeaders, max_context, online_status, setGenerationParamsFromPreset } from '../script.js';
 import { textgenerationwebui_settings as textgen_settings, textgen_types } from './textgen-settings.js';
 import { tokenizers } from './tokenizers.js';
+import { renderTemplateAsync } from './templates.js';
+import { POPUP_TYPE, callGenericPopup } from './popup.js';
 
 let mancerModels = [];
 let togetherModels = [];
@@ -10,6 +12,7 @@ let dreamGenModels = [];
 let vllmModels = [];
 let aphroditeModels = [];
 let featherlessModels = [];
+let tabbyModels = [];
 export let openRouterModels = [];
 
 /**
@@ -64,12 +67,37 @@ export async function loadOllamaModels(data) {
     }
 }
 
+export async function loadTabbyModels(data) {
+    if (!Array.isArray(data)) {
+        console.error('Invalid Tabby models data', data);
+        return;
+    }
+
+    tabbyModels = data;
+    tabbyModels.sort((a, b) => a.id.localeCompare(b.id));
+    tabbyModels.unshift({ id: '' });
+
+    if (!tabbyModels.find(x => x.id === textgen_settings.tabby_model)) {
+        textgen_settings.tabby_model = tabbyModels[0]?.id || '';
+    }
+
+    $('#tabby_model').empty();
+    for (const model of tabbyModels) {
+        const option = document.createElement('option');
+        option.value = model.id;
+        option.text = model.id;
+        option.selected = model.id === textgen_settings.tabby_model;
+        $('#tabby_model').append(option);
+    }
+}
+
 export async function loadTogetherAIModels(data) {
     if (!Array.isArray(data)) {
         console.error('Invalid Together AI models data', data);
         return;
     }
 
+    data.sort((a, b) => a.name.localeCompare(b.name));
     togetherModels = data;
 
     if (!data.find(x => x.name === textgen_settings.togetherai_model)) {
@@ -97,6 +125,7 @@ export async function loadInfermaticAIModels(data) {
         return;
     }
 
+    data.sort((a, b) => a.id.localeCompare(b.id));
     infermaticAIModels = data;
 
     if (!data.find(x => x.id === textgen_settings.infermaticai_model)) {
@@ -149,6 +178,7 @@ export async function loadMancerModels(data) {
         return;
     }
 
+    data.sort((a, b) => a.name.localeCompare(b.name));
     mancerModels = data;
 
     if (!data.find(x => x.id === textgen_settings.mancer_model)) {
@@ -171,6 +201,7 @@ export async function loadOpenRouterModels(data) {
         return;
     }
 
+    data.sort((a, b) => a.name.localeCompare(b.name));
     openRouterModels = data;
 
     if (!data.find(x => x.id === textgen_settings.openrouter_model)) {
@@ -240,6 +271,7 @@ export async function loadFeatherlessModels(data) {
         return;
     }
 
+    data.sort((a, b) => a.id.localeCompare(b.id));
     featherlessModels = data;
 
     if (!data.find(x => x.id === textgen_settings.featherless_model)) {
@@ -260,6 +292,8 @@ function onFeatherlessModelSelect() {
     const modelId = String($('#featherless_model').val());
     textgen_settings.featherless_model = modelId;
     $('#api_button_textgenerationwebui').trigger('click');
+    const model = featherlessModels.find(x => x.id === modelId);
+    setGenerationParamsFromPreset({ max_length: model.context_length });
 }
 
 
@@ -298,6 +332,12 @@ function onDreamGenModelSelect() {
 function onOllamaModelSelect() {
     const modelId = String($('#ollama_model').val());
     textgen_settings.ollama_model = modelId;
+    $('#api_button_textgenerationwebui').trigger('click');
+}
+
+function onTabbyModelSelect() {
+    const modelId = String($('#tabby_model').val());
+    textgen_settings.tabby_model = modelId;
     $('#api_button_textgenerationwebui').trigger('click');
 }
 
@@ -429,6 +469,20 @@ function getAphroditeModelTemplate(option) {
     `));
 }
 
+function getFeatherlessModelTemplate(option) {
+    const model = featherlessModels.find(x => x.id === option?.element?.value);
+
+    if (!option.id || !model) {
+        return option.text;
+    }
+
+    return $((`
+        <div class="flex-container flexFlowColumn">
+            <div><strong>${DOMPurify.sanitize(model.name)}</strong> | <span>${model.context_length || '???'} tokens</span></div>
+        </div>
+    `));
+}
+
 async function downloadOllamaModel() {
     try {
         const serverUrl = textgen_settings.server_urls[textgen_types.OLLAMA];
@@ -470,6 +524,74 @@ async function downloadOllamaModel() {
     }
 }
 
+async function downloadTabbyModel() {
+    try {
+        const serverUrl = textgen_settings.server_urls[textgen_types.TABBY];
+
+        if (online_status === 'no_connection' || !serverUrl) {
+            toastr.info('Please connect to a TabbyAPI server first.');
+            return;
+        }
+
+        const downloadHtml = $(await renderTemplateAsync('tabbyDownloader'));
+        const popupResult = await callGenericPopup(downloadHtml, POPUP_TYPE.CONFIRM, '', { okButton: 'Download', cancelButton: 'Cancel' });
+
+        // User cancelled the download
+        if (!popupResult) {
+            return;
+        }
+
+        const repoId = downloadHtml.find('input[name="hf_repo_id"]').val().toString();
+        if (!repoId) {
+            toastr.error('A HuggingFace repo ID must be provided. Skipping Download.');
+            return;
+        }
+
+        if (repoId.split('/').length !== 2) {
+            toastr.error('A HuggingFace repo ID must be formatted as Author/Name. Please try again.');
+            return;
+        }
+
+        const params = {
+            repo_id: repoId,
+            folder_name: downloadHtml.find('input[name="folder_name"]').val() || undefined,
+            revision: downloadHtml.find('input[name="revision"]').val() || undefined,
+            token: downloadHtml.find('input[name="hf_token"]').val() || undefined,
+        };
+
+        for (const suffix of ['include', 'exclude']) {
+            const patterns = downloadHtml.find(`textarea[name="tabby_download_${suffix}"]`).val().toString();
+            if (patterns) {
+                params[suffix] = patterns.split('\n');
+            }
+        }
+
+        // Params for the server side of ST
+        params['api_server'] = serverUrl;
+        params['api_type'] = textgen_settings.type;
+
+        toastr.info('Downloading. Check the Tabby console for progress reports.');
+
+        const response = await fetch('/api/backends/text-completions/tabby/download', {
+            method: 'POST',
+            headers: getRequestHeaders(),
+            body: JSON.stringify(params),
+        });
+
+        if (response.status === 403) {
+            toastr.error('The provided key has invalid permissions. Please use an admin key for downloading.');
+            return;
+        } else if (!response.ok) {
+            throw new Error(response.statusText);
+        }
+
+        toastr.success('Download complete.');
+    } catch (err) {
+        console.error(err);
+        toastr.error('Failed to download HuggingFace model in TabbyAPI. Please try again.');
+    }
+}
+
 function calculateOpenRouterCost() {
     if (textgen_settings.type !== textgen_types.OPENROUTER) {
         return;
@@ -499,6 +621,9 @@ function calculateOpenRouterCost() {
 export function getCurrentOpenRouterModelTokenizer() {
     const modelId = textgen_settings.openrouter_model;
     const model = openRouterModels.find(x => x.id === modelId);
+    if (modelId?.includes('jamba')) {
+        return tokenizers.JAMBA;
+    }
     switch (model?.architecture?.tokenizer) {
         case 'Llama2':
             return tokenizers.LLAMA;
@@ -508,6 +633,14 @@ export function getCurrentOpenRouterModelTokenizer() {
             return tokenizers.YI;
         case 'Mistral':
             return tokenizers.MISTRAL;
+        case 'Gemini':
+            return tokenizers.GEMMA;
+        case 'Claude':
+            return tokenizers.CLAUDE;
+        case 'Cohere':
+            return tokenizers.COMMAND_R;
+        case 'Qwen':
+            return tokenizers.QWEN2;
         default:
             return tokenizers.OPENAI;
     }
@@ -527,7 +660,7 @@ export function getCurrentDreamGenModelTokenizer() {
     }
 }
 
-jQuery(function () {
+export function initTextGenModels() {
     $('#mancer_model').on('change', onMancerModelSelect);
     $('#model_togetherai_select').on('change', onTogetherModelSelect);
     $('#model_infermaticai_select').on('change', onInfermaticAIModelSelect);
@@ -538,6 +671,8 @@ jQuery(function () {
     $('#vllm_model').on('change', onVllmModelSelect);
     $('#aphrodite_model').on('change', onAphroditeModelSelect);
     $('#featherless_model').on('change', onFeatherlessModelSelect);
+    $('#tabby_download_model').on('click', downloadTabbyModel);
+    $('#tabby_model').on('change', onTabbyModelSelect);
 
     const providersSelect = $('.openrouter_providers');
     for (const provider of OPENROUTER_PROVIDERS) {
@@ -567,6 +702,13 @@ jQuery(function () {
             searchInputPlaceholder: 'Search models...',
             searchInputCssClass: 'text_pole',
             width: '100%',
+        });
+        $('#tabby_model').select2({
+            placeholder: '[Currently loaded]',
+            searchInputPlaceholder: 'Search models...',
+            searchInputCssClass: 'text_pole',
+            width: '100%',
+            allowClear: true,
         });
         $('#model_infermaticai_select').select2({
             placeholder: 'Select a model',
@@ -608,6 +750,7 @@ jQuery(function () {
             searchInputPlaceholder: 'Search models...',
             searchInputCssClass: 'text_pole',
             width: '100%',
+            templateResult: getFeatherlessModelTemplate,
         });
         providersSelect.select2({
             sorter: data => data.sort((a, b) => a.text.localeCompare(b.text)),
@@ -615,6 +758,7 @@ jQuery(function () {
             searchInputPlaceholder: 'Search providers...',
             searchInputCssClass: 'text_pole',
             width: '100%',
+            closeOnSelect: false,
         });
         providersSelect.on('select2:select', function (/** @type {any} */ evt) {
             const element = evt.params.data.element;
@@ -625,4 +769,4 @@ jQuery(function () {
             $(this).trigger('change');
         });
     }
-});
+}

@@ -9,6 +9,7 @@ import { SystemTtsProvider } from './system.js';
 import { NovelTtsProvider } from './novel.js';
 import { power_user } from '../../power-user.js';
 import { OpenAITtsProvider } from './openai.js';
+import { OpenAICompatibleTtsProvider } from './openai-compatible.js';
 import { XTTSTtsProvider } from './xtts.js';
 import { VITSTtsProvider } from './vits.js';
 import { GSVITtsProvider } from './gsvi.js';
@@ -82,20 +83,21 @@ export function getPreviewString(lang) {
 }
 
 const ttsProviders = {
-    ElevenLabs: ElevenLabsTtsProvider,
-    Silero: SileroTtsProvider,
-    XTTSv2: XTTSTtsProvider,
-    VITS: VITSTtsProvider,
-    GSVI: GSVITtsProvider,
-    SBVits2: SBVits2TtsProvider,
-    System: SystemTtsProvider,
+    AllTalk: AllTalkTtsProvider,
+    Azure: AzureTtsProvider,
     Coqui: CoquiTtsProvider,
     Edge: EdgeTtsProvider,
+    ElevenLabs: ElevenLabsTtsProvider,
+    GSVI: GSVITtsProvider,
     Novel: NovelTtsProvider,
     OpenAI: OpenAITtsProvider,
-    AllTalk: AllTalkTtsProvider,
+    'OpenAI Compatible': OpenAICompatibleTtsProvider,
+    SBVits2: SBVits2TtsProvider,
+    Silero: SileroTtsProvider,
     SpeechT5: SpeechT5TtsProvider,
-    Azure: AzureTtsProvider,
+    System: SystemTtsProvider,
+    VITS: VITSTtsProvider,
+    XTTSv2: XTTSTtsProvider,
 };
 let ttsProvider;
 let ttsProviderName;
@@ -348,13 +350,18 @@ function onAudioControlClicked() {
 }
 
 function addAudioControl() {
-
     $('#tts_wand_container').append(`
         <div id="ttsExtensionMenuItem" class="list-group-item flex-container flexGap5">
             <div id="tts_media_control" class="extensionsMenuExtensionButton "/></div>
             TTS Playback
         </div>`);
+    $('#tts_wand_container').append(`
+        <div id="ttsExtensionNarrateAll" class="list-group-item flex-container flexGap5">
+            <div class="extensionsMenuExtensionButton fa-solid fa-radio"></div>
+            Narrate All Chat
+        </div>`);
     $('#ttsExtensionMenuItem').attr('title', 'TTS play/pause').on('click', onAudioControlClicked);
+    $('#ttsExtensionNarrateAll').attr('title', 'Narrate all messages in the current chat. Includes user messages, excludes hidden comments.').on('click', playFullConversation);
     updateUiAudioPlayState();
 }
 
@@ -414,7 +421,7 @@ function completeTtsJob() {
 async function tts(text, voiceId, char) {
     async function processResponse(response) {
         // RVC injection
-        if (extension_settings.rvc.enabled && typeof window['rvcVoiceConversion'] === 'function')
+        if (typeof window['rvcVoiceConversion'] === 'function' && extension_settings.rvc.enabled)
             response = await window['rvcVoiceConversion'](response, char, text);
 
         await addAudioJob(response, char);
@@ -512,12 +519,23 @@ async function processTtsQueue() {
     }
 }
 
-// Secret function for now
 async function playFullConversation() {
+    resetTtsPlayback();
+
+    if (!extension_settings.tts.enabled) {
+        return toastr.warning('TTS is disabled. Please enable it in the extension settings.');
+    }
+
     const context = getContext();
-    const chat = context.chat;
+    const chat = context.chat.filter(x => !x.is_system && x.mes !== '...' && x.mes !== '');
+
+    if (chat.length === 0) {
+        return toastr.info('No messages to narrate.');
+    }
+
     ttsJobQueue = chat;
 }
+
 window['playFullConversation'] = playFullConversation;
 
 //#############################//
@@ -736,6 +754,11 @@ async function onMessageEvent(messageId, lastCharIndex) {
     // clone message object, as things go haywire if message object is altered below (it's passed by reference)
     const message = structuredClone(context.chat[messageId]);
     const hashNew = getStringHash(message?.mes ?? '');
+
+    // Ignore prompt-hidden messages
+    if (message.is_system) {
+        return;
+    }
 
     // if no new messages, or same message, or same message hash, do nothing
     if (hashNew === lastMessageHash) {
