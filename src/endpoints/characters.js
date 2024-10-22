@@ -408,6 +408,9 @@ function charaFormatData(data, directories) {
     //_.set(char, 'data.extensions.avatar', 'none');
     //_.set(char, 'data.extensions.chat', data.ch_name + ' - ' + humanizedISO8601DateTime());
 
+    // V3 fields
+    _.set(char, 'data.group_only_greetings', data.group_only_greetings ?? []);
+
     if (data.world) {
         try {
             const file = readWorldInfoFile(directories, data.world, false);
@@ -723,13 +726,12 @@ router.post('/create', urlencodedParser, async function (request, response) {
         const char = JSON.stringify(charaFormatData(request.body, request.user.directories));
         const internalName = getPngName(request.body.ch_name, request.user.directories);
         const avatarName = `${internalName}.png`;
-        const defaultAvatar = './public/img/ai4.png';
         const chatsPath = path.join(request.user.directories.chats, internalName);
 
         if (!fs.existsSync(chatsPath)) fs.mkdirSync(chatsPath);
 
         if (!request.file) {
-            await writeCharacterData(defaultAvatar, char, internalName, request);
+            await writeCharacterData(defaultAvatarPath, char, internalName, request);
             return response.send(avatarName);
         } else {
             const crop = tryParse(request.query.crop);
@@ -1024,6 +1026,12 @@ router.post('/chats', jsonParser, async function (request, response) {
                 const fileStream = fs.createReadStream(pathToFile);
                 const stats = fs.statSync(pathToFile);
                 const fileSizeInKB = `${(stats.size / 1024).toFixed(2)}kb`;
+
+                if (stats.size === 0) {
+                    console.log(`Found an empty chat file: ${pathToFile}`);
+                    res({});
+                    return;
+                }
 
                 const rl = readline.createInterface({
                     input: fileStream,

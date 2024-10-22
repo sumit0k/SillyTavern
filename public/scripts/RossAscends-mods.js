@@ -157,18 +157,15 @@ export function shouldSendOnEnter() {
 //Does not break old characters/chats, as the code just uses whatever timestamp exists in the chat.
 //New chats made with characters will use this new formatting.
 export function humanizedDateTime() {
-    let baseDate = new Date(Date.now());
-    let humanYear = baseDate.getFullYear();
-    let humanMonth = baseDate.getMonth() + 1;
-    let humanDate = baseDate.getDate();
-    let humanHour = (baseDate.getHours() < 10 ? '0' : '') + baseDate.getHours();
-    let humanMinute =
-        (baseDate.getMinutes() < 10 ? '0' : '') + baseDate.getMinutes();
-    let humanSecond =
-        (baseDate.getSeconds() < 10 ? '0' : '') + baseDate.getSeconds();
-    let HumanizedDateTime =
-        humanYear + '-' + humanMonth + '-' + humanDate + '@' + humanHour + 'h' + humanMinute + 'm' + humanSecond + 's';
-    return HumanizedDateTime;
+    const now = new Date(Date.now());
+    const dt = {
+        year: now.getFullYear(),  month: now.getMonth() + 1,  day: now.getDate(),
+        hour: now.getHours(),     minute: now.getMinutes(),   second: now.getSeconds(),
+    };
+    for (const key in dt) {
+        dt[key] = dt[key].toString().padStart(2, '0');
+    }
+    return `${dt.year}-${dt.month}-${dt.day}@${dt.hour}h${dt.minute}m${dt.second}s`;
 }
 
 //this is a common format version to display a timestamp on each chat message
@@ -299,7 +296,7 @@ export async function favsToHotswap() {
 
     //helpful instruction message if no characters are favorited
     if (favs.length == 0) {
-        container.html(`<small><span><i class="fa-solid fa-star"></i>${DOMPurify.sanitize(container.attr('no_favs'))}</span></small>`);
+        container.html(`<small><span><i class="fa-solid fa-star"></i>&nbsp;${DOMPurify.sanitize(container.attr('no_favs'))}</span></small>`);
         return;
     }
 
@@ -314,6 +311,7 @@ function RA_checkOnlineStatus() {
         $('#send_form').addClass('no-connection'); //entire input form area is red when not connected
         $('#send_but').addClass('displayNone'); //send button is hidden when not connected;
         $('#mes_continue').addClass('displayNone'); //continue button is hidden when not connected;
+        $('#mes_impersonate').addClass('displayNone'); //continue button is hidden when not connected;
         $('#API-status-top').removeClass('fa-plug');
         $('#API-status-top').addClass('fa-plug-circle-exclamation redOverlayGlow');
         connection_made = false;
@@ -330,6 +328,7 @@ function RA_checkOnlineStatus() {
             if (!is_send_press && !(selected_group && is_group_generating)) {
                 $('#send_but').removeClass('displayNone'); //on connect, send button shows
                 $('#mes_continue').removeClass('displayNone'); //continue button is shown when connected
+                $('#mes_impersonate').removeClass('displayNone'); //continue button is shown when connected
             }
         }
     }
@@ -381,6 +380,7 @@ function RA_autoconnect(PrevApi) {
                     || (secret_state[SECRET_KEYS.PERPLEXITY] && oai_settings.chat_completion_source == chat_completion_sources.PERPLEXITY)
                     || (secret_state[SECRET_KEYS.GROQ] && oai_settings.chat_completion_source == chat_completion_sources.GROQ)
                     || (secret_state[SECRET_KEYS.ZEROONEAI] && oai_settings.chat_completion_source == chat_completion_sources.ZEROONEAI)
+                    || (secret_state[SECRET_KEYS.BLOCKENTROPY] && oai_settings.chat_completion_source == chat_completion_sources.BLOCKENTROPY)
                     || (isValidUrl(oai_settings.custom_url) && oai_settings.chat_completion_source == chat_completion_sources.CUSTOM)
                 ) {
                     $('#api_button_openai').trigger('click');
@@ -696,20 +696,32 @@ const isFirefox = navigator.userAgent.toLowerCase().indexOf('firefox') > -1;
 function autoFitSendTextArea() {
     const originalScrollBottom = chatBlock.scrollHeight - (chatBlock.scrollTop + chatBlock.offsetHeight);
     if (Math.ceil(sendTextArea.scrollHeight + 3) >= Math.floor(sendTextArea.offsetHeight)) {
-        // Needs to be pulled dynamically because it is affected by font size changes
-        const sendTextAreaMinHeight = window.getComputedStyle(sendTextArea).getPropertyValue('min-height');
+        const sendTextAreaMinHeight = '0px';
         sendTextArea.style.height = sendTextAreaMinHeight;
     }
-    sendTextArea.style.height = sendTextArea.scrollHeight + 3 + 'px';
+    const newHeight = sendTextArea.scrollHeight + 3;
+    sendTextArea.style.height = `${newHeight}px`;
 
     if (!isFirefox) {
         const newScrollTop = Math.round(chatBlock.scrollHeight - (chatBlock.offsetHeight + originalScrollBottom));
         chatBlock.scrollTop = newScrollTop;
     }
 }
-export const autoFitSendTextAreaDebounced = debounce(autoFitSendTextArea);
+export const autoFitSendTextAreaDebounced = debounce(autoFitSendTextArea, debounce_timeout.short);
 
 // ---------------------------------------------------
+
+export function addSafariPatch() {
+    const userAgent = getParsedUA();
+    console.debug('User Agent', userAgent);
+    const isMobileSafari = /iPad|iPhone|iPod/.test(navigator.platform) || (navigator.platform === 'MacIntel' && navigator.maxTouchPoints > 1);
+    const isDesktopSafari = userAgent?.browser?.name === 'Safari' && userAgent?.platform?.type === 'desktop';
+    const isIOS = userAgent?.os?.name === 'iOS';
+
+    if (isIOS || isMobileSafari || isDesktopSafari) {
+        document.body.classList.add('safari');
+    }
+}
 
 export function initRossMods() {
     // initial status check
@@ -725,14 +737,14 @@ export function initRossMods() {
         RA_autoconnect();
     }
 
-    const userAgent = getParsedUA();
-    console.debug('User Agent', userAgent);
-    const isMobileSafari = /iPad|iPhone|iPod/.test(navigator.platform) || (navigator.platform === 'MacIntel' && navigator.maxTouchPoints > 1);
-    const isDesktopSafari = userAgent?.browser?.name === 'Safari' && userAgent?.platform?.type === 'desktop';
-    const isIOS = userAgent?.os?.name === 'iOS';
-
-    if (isIOS || isMobileSafari || isDesktopSafari) {
-        document.body.classList.add('safari');
+    if (isMobile()) {
+        const fixFunkyPositioning = () => {
+            console.debug('[Mobile] Device viewport change detected.');
+            document.documentElement.style.position = 'fixed';
+            requestAnimationFrame(() => document.documentElement.style.position = '');
+        };
+        window.addEventListener('resize', fixFunkyPositioning);
+        window.addEventListener('orientationchange', fixFunkyPositioning);
     }
 
     $('#main_api').change(function () {
@@ -881,24 +893,28 @@ export function initRossMods() {
         saveSettingsDebounced();
     });
 
-    $(sendTextArea).on('input', () => {
-        if (sendTextArea.scrollHeight > sendTextArea.offsetHeight || sendTextArea.value === '') {
-            autoFitSendTextArea();
-        } else {
-            autoFitSendTextAreaDebounced();
-        }
+    sendTextArea.addEventListener('input', () => {
+        const hasContent = sendTextArea.value !== '';
+        const fitsCurrentSize = sendTextArea.scrollHeight <= sendTextArea.offsetHeight;
+        const isScrollbarShown = sendTextArea.clientWidth < sendTextArea.offsetWidth;
+        const isHalfScreenHeight = sendTextArea.offsetHeight >= window.innerHeight / 2;
+        const needsDebounce = hasContent && (fitsCurrentSize || (isScrollbarShown && isHalfScreenHeight));
+        if (needsDebounce) autoFitSendTextAreaDebounced();
+        else autoFitSendTextArea();
         saveUserInputDebounced();
     });
 
     restoreUserInput();
 
-    //Regenerate if user swipes on the last mesage in chat
-
+    // Swipe gestures (see: https://www.npmjs.com/package/swiped-events)
     document.addEventListener('swiped-left', function (e) {
         if (power_user.gestures === false) {
             return;
         }
-        if ($('.mes_edit_buttons, .drawer-content, #character_popup, #dialogue_popup, #WorldInfo, #right-nav-panel, #left-nav-panel, #select_chat_popup, #floatingPrompt').is(':visible')) {
+        if (Popup.util.isPopupOpen()) {
+            return;
+        }
+        if (!$(e.target).closest('#sheld').length) {
             return;
         }
         var SwipeButR = $('.swipe_right:last');
@@ -913,7 +929,10 @@ export function initRossMods() {
         if (power_user.gestures === false) {
             return;
         }
-        if ($('.mes_edit_buttons, .drawer-content, #character_popup, #dialogue_popup, #WorldInfo, #right-nav-panel, #left-nav-panel, #select_chat_popup, #floatingPrompt').is(':visible')) {
+        if (Popup.util.isPopupOpen()) {
+            return;
+        }
+        if (!$(e.target).closest('#sheld').length) {
             return;
         }
         var SwipeButL = $('.swipe_left:last');
@@ -952,6 +971,11 @@ export function initRossMods() {
      * @param {KeyboardEvent} event
      */
     async function processHotkeys(event) {
+        // Default hotkeys and shortcuts shouldn't work if any popup is currently open
+        if (Popup.util.isPopupOpen()) {
+            return;
+        }
+
         //Enter to send when send_textarea in focus
         if (document.activeElement == hotkeyTargets['send_textarea']) {
             const sendOnEnter = shouldSendOnEnter();
@@ -1105,10 +1129,6 @@ export function initRossMods() {
         }
 
         if (event.key == 'Escape') { //closes various panels
-            // Do not close panels if we are currently inside a popup
-            if (Popup.util.isPopupOpen())
-                return;
-
             //dont override Escape hotkey functions from script.js
             //"close edit box" and "cancel stream generation".
             if ($('#curEditTextarea').is(':visible') || $('#mes_stop').is(':visible')) {

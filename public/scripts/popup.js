@@ -40,8 +40,8 @@ export const POPUP_RESULT = {
  * @property {POPUP_RESULT|number?} [defaultResult=POPUP_RESULT.AFFIRMATIVE] - The default result of this popup when Enter is pressed. Can be changed from `POPUP_RESULT.AFFIRMATIVE`.
  * @property {CustomPopupButton[]|string[]?} [customButtons=null] - Custom buttons to add to the popup. If only strings are provided, the buttons will be added with default options, and their result will be in order from `2` onward.
  * @property {CustomPopupInput[]?} [customInputs=null] - Custom inputs to add to the popup. The display below the content and the input box, one by one.
- * @property {(popup: Popup) => boolean?} [onClosing=null] - Handler called before the popup closes, return `false` to cancel the close
- * @property {(popup: Popup) => void?} [onClose=null] - Handler called after the popup closes, but before the DOM is cleaned up
+ * @property {(popup: Popup) => Promise<boolean?>|boolean?} [onClosing=null] - Handler called before the popup closes, return `false` to cancel the close
+ * @property {(popup: Popup) => Promise<void?>|void?} [onClose=null] - Handler called after the popup closes, but before the DOM is cleaned up
  * @property {number?} [cropAspect=null] - Aspect ratio for the crop popup
  * @property {string?} [cropImage=null] - Image URL to display in the crop popup
  */
@@ -73,8 +73,8 @@ const showPopupHelper = {
     /**
      * Asynchronously displays an input popup with the given header and text, and returns the user's input.
      *
-     * @param {string} header - The header text for the popup.
-     * @param {string} text - The main text for the popup.
+     * @param {string?} header - The header text for the popup.
+     * @param {string?} text - The main text for the popup.
      * @param {string} [defaultValue=''] - The default value for the input field.
      * @param {PopupOptions} [popupOptions={}] - Options for the popup.
      * @return {Promise<string?>} A Promise that resolves with the user's input.
@@ -83,6 +83,9 @@ const showPopupHelper = {
         const content = PopupUtils.BuildTextWithHeader(header, text);
         const popup = new Popup(content, POPUP_TYPE.INPUT, defaultValue, popupOptions);
         const value = await popup.show();
+        // Return values: If empty string, we explicitly handle that as returning that empty string as "success" provided.
+        // Otherwise, all non-truthy values (false, null, undefined) are treated as "cancel" and return null.
+        if (value === '') return '';
         return value ? String(value) : null;
     },
 
@@ -92,13 +95,28 @@ const showPopupHelper = {
      * @param {string?} header - The header text for the popup.
      * @param {string?} text - The main text for the popup.
      * @param {PopupOptions} [popupOptions={}] - Options for the popup.
-     * @return {Promise<POPUP_RESULT>} A Promise that resolves with the result of the user's interaction.
+     * @return {Promise<POPUP_RESULT?>} A Promise that resolves with the result of the user's interaction.
      */
     confirm: async (header, text, popupOptions = {}) => {
         const content = PopupUtils.BuildTextWithHeader(header, text);
         const popup = new Popup(content, POPUP_TYPE.CONFIRM, null, popupOptions);
         const result = await popup.show();
         if (typeof result === 'string' || typeof result === 'boolean') throw new Error(`Invalid popup result. CONFIRM popups only support numbers, or null. Result: ${result}`);
+        return result;
+    },
+    /**
+     * Asynchronously displays a text popup with the given header and text, returning the clicked result button value.
+     *
+     * @param {string?} header - The header text for the popup.
+     * @param {string?} text - The main text for the popup.
+     * @param {PopupOptions} [popupOptions={}] - Options for the popup.
+     * @return {Promise<POPUP_RESULT?>} A Promise that resolves with the result of the user's interaction.
+     */
+    text: async (header, text, popupOptions = {}) => {
+        const content = PopupUtils.BuildTextWithHeader(header, text);
+        const popup = new Popup(content, POPUP_TYPE.TEXT, null, popupOptions);
+        const result = await popup.show();
+        if (typeof result === 'string' || typeof result === 'boolean') throw new Error(`Invalid popup result. TEXT popups only support numbers, or null. Result: ${result}`);
         return result;
     },
 };
@@ -123,8 +141,8 @@ export class Popup {
     /** @readonly @type {CustomPopupButton[]|string[]?} */ customButtons;
     /** @readonly @type {CustomPopupInput[]} */ customInputs;
 
-    /** @type {(popup: Popup) => boolean?} */ onClosing;
-    /** @type {(popup: Popup) => void?} */ onClose;
+    /** @type {(popup: Popup) => Promise<boolean?>|boolean?} */ onClosing;
+    /** @type {(popup: Popup) => Promise<void?>|void?} */ onClose;
 
     /** @type {POPUP_RESULT|number} */ result;
     /** @type {any} */ value;
@@ -135,6 +153,7 @@ export class Popup {
 
     /** @type {Promise<any>} */ #promise;
     /** @type {(result: any) => any} */ #resolver;
+    /** @type {boolean} */ #isClosingPrevented;
 
     /**
      * Constructs a new Popup object with the given text content, type, inputValue, and options
@@ -194,7 +213,7 @@ export class Popup {
             const buttonElement = document.createElement('div');
             buttonElement.classList.add('menu_button', 'popup-button-custom', 'result-control');
             buttonElement.classList.add(...(button.classes ?? []));
-            buttonElement.dataset.result = String(button.result ?? undefined);
+            buttonElement.dataset.result = String(button.result); // This is expected to also write 'null' or 'staging', to indicate cancel and no action respectively
             buttonElement.textContent = button.text;
             buttonElement.dataset.i18n = buttonElement.textContent;
             buttonElement.tabIndex = 0;
@@ -265,6 +284,7 @@ export class Popup {
             case POPUP_TYPE.INPUT: {
                 this.mainInput.style.display = 'block';
                 if (!okButton) this.okButton.textContent = template.getAttribute('popup-button-save');
+                if (cancelButton === false) this.cancelButton.style.display = 'none';
                 break;
             }
             case POPUP_TYPE.DISPLAY: {
@@ -317,9 +337,14 @@ export class Popup {
         // Bind event listeners for all result controls to their defined event type
         this.dlg.querySelectorAll('[data-result]').forEach(resultControl => {
             if (!(resultControl instanceof HTMLElement)) return;
-            const result = Number(resultControl.dataset.result);
-            if (String(undefined) === String(resultControl.dataset.result)) return;
-            if (isNaN(result)) throw new Error('Invalid result control. Result must be a number. ' + resultControl.dataset.result);
+            // If no value was set, we exit out and don't bind an action
+            if (String(resultControl.dataset.result) === String(undefined)) return;
+
+            // Make sure that both `POPUP_RESULT` numbers and also `null` as 'cancelled' are supported
+            const result = String(resultControl.dataset.result) === String(null) ? null
+                : Number(resultControl.dataset.result);
+
+            if (result !== null && isNaN(result)) throw new Error('Invalid result control. Result must be a number. ' + resultControl.dataset.result);
             const type = resultControl.dataset.resultEvent || 'click';
             resultControl.addEventListener(type, async () => await this.complete(result));
         });
@@ -329,10 +354,21 @@ export class Popup {
             evt.preventDefault();
             evt.stopPropagation();
             await this.complete(POPUP_RESULT.CANCELLED);
-            window.removeEventListener('cancel', cancelListenerBound);
         };
-        const cancelListenerBound = cancelListener.bind(this);
-        this.dlg.addEventListener('cancel', cancelListenerBound);
+        this.dlg.addEventListener('cancel', cancelListener.bind(this));
+
+        // Don't ask me why this is needed. I don't get it. But we have to keep it.
+        // We make sure that the modal on its own doesn't hide. Dunno why, if onClosing is triggered multiple times through the cancel event, and stopped,
+        // it seems to just call 'close' on the dialog even if the 'cancel' event was prevented.
+        // So here we just say that close should not happen if it was prevented.
+        const closeListener = async (evt) => {
+            if (this.#isClosingPrevented) {
+                evt.preventDefault();
+                evt.stopPropagation();
+                this.dlg.showModal();
+            }
+        };
+        this.dlg.addEventListener('close', closeListener.bind(this));
 
         const keyListener = async (evt) => {
             switch (evt.key) {
@@ -361,16 +397,16 @@ export class Popup {
                     evt.preventDefault();
                     evt.stopPropagation();
                     const result = Number(document.activeElement.getAttribute('data-result') ?? this.defaultResult);
+
+                    // Call complete on the popup. Make sure that we handle `onClosing` cancels correctly and don't remove the listener then.
                     await this.complete(result);
-                    window.removeEventListener('keydown', keyListenerBound);
 
                     break;
                 }
             }
 
         };
-        const keyListenerBound = keyListener.bind(this);
-        this.dlg.addEventListener('keydown', keyListenerBound);
+        this.dlg.addEventListener('keydown', keyListener.bind(this));
     }
 
     /**
@@ -440,9 +476,11 @@ export class Popup {
      * - popup with `POPUP_TYPE.INPUT` will return the input value - or `false` on negative and `null` on cancelled
      * - All other will return the result value as provided as `POPUP_RESULT` or a custom number value
      *
+     * <b>IMPORTANT:</b> If the popup closing was cancelled via the `onClosing` handler, the return value will be `Promise<undefined>`.
+     *
      * @param {POPUP_RESULT|number} result - The result of the popup (either an existing `POPUP_RESULT` or a custom result value)
      *
-     * @returns {Promise<string|number|boolean?>} A promise that resolves with the value of the popup when it is completed.
+     * @returns {Promise<string|number|boolean|undefined?>} A promise that resolves with the value of the popup when it is completed. <b>Returns `undefined` if the closing action was cancelled.</b>
      */
     async complete(result) {
         // In all cases besides INPUT the popup value should be the result
@@ -475,14 +513,31 @@ export class Popup {
         this.result = result;
 
         if (this.onClosing) {
-            const shouldClose = this.onClosing(this);
-            if (!shouldClose) return;
+            const shouldClose = await this.onClosing(this);
+            if (!shouldClose) {
+                this.#isClosingPrevented = true;
+                // Set values back if we cancel out of closing the popup
+                this.value = undefined;
+                this.result = undefined;
+                this.inputResults = undefined;
+                return undefined;
+            }
         }
+        this.#isClosingPrevented = false;
 
         Popup.util.lastResult = { value, result, inputResults: this.inputResults };
         this.#hide();
 
         return this.#promise;
+    }
+    async completeAffirmative() {
+        return await this.complete(POPUP_RESULT.AFFIRMATIVE);
+    }
+    async completeNegative() {
+        return await this.complete(POPUP_RESULT.NEGATIVE);
+    }
+    async completeCancelled() {
+        return await this.complete(POPUP_RESULT.CANCELLED);
     }
 
     /**
@@ -496,13 +551,13 @@ export class Popup {
         fixToastrForDialogs();
 
         // After the dialog is actually completely closed, remove it from the DOM
-        runAfterAnimation(this.dlg, () => {
+        runAfterAnimation(this.dlg, async () => {
             // Call the close on the dialog
             this.dlg.close();
 
             // Run a possible custom handler right before DOM removal
             if (this.onClose) {
-                this.onClose(this);
+                await this.onClose(this);
             }
 
             // Remove it from the dom
@@ -545,7 +600,7 @@ export class Popup {
 
         /** @returns {boolean} Checks if any modal popup dialog is open */
         isPopupOpen() {
-            return Popup.util.popups.length > 0;
+            return Popup.util.popups.filter(x => x.dlg.hasAttribute('open')).length > 0;
         },
 
         /**
@@ -564,15 +619,15 @@ class PopupUtils {
     /**
      * Builds popup content with header and text below
      *
-     * @param {string} header - The header to be added to the text
-     * @param {string} text - The main text content
+     * @param {string?} header - The header to be added to the text
+     * @param {string?} text - The main text content
      */
     static BuildTextWithHeader(header, text) {
         if (!header) {
             return text;
         }
         return `<h3>${header}</h3>
-            ${text}`;
+            ${text ?? ''}`; // Convert no text to empty string
     }
 }
 
