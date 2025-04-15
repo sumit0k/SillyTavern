@@ -1,12 +1,12 @@
-const fs = require('fs');
-const path = require('path');
-const express = require('express');
-const { getConfigValue } = require('../util');
-const writeFileAtomicSync = require('write-file-atomic').sync;
-const { jsonParser } = require('../express-common');
+import fs from 'node:fs';
+import path from 'node:path';
 
-const SECRETS_FILE = 'secrets.json';
-const SECRET_KEYS = {
+import express from 'express';
+import { sync as writeFileAtomicSync } from 'write-file-atomic';
+import { getConfigValue } from '../util.js';
+
+export const SECRETS_FILE = 'secrets.json';
+export const SECRET_KEYS = {
     HORDE: 'api_key_horde',
     MANCER: 'api_key_mancer',
     VLLM: 'api_key_vllm',
@@ -46,6 +46,13 @@ const SECRET_KEYS = {
     STABILITY: 'api_key_stability',
     BLOCKENTROPY: 'api_key_blockentropy',
     CUSTOM_OPENAI_TTS: 'api_key_custom_openai_tts',
+    TAVILY: 'api_key_tavily',
+    NANOGPT: 'api_key_nanogpt',
+    BFL: 'api_key_bfl',
+    FALAI: 'api_key_falai',
+    GENERIC: 'api_key_generic',
+    DEEPSEEK: 'api_key_deepseek',
+    SERPER: 'api_key_serper',
 };
 
 // These are the keys that are safe to expose, even if allowKeysExposure is false
@@ -58,11 +65,11 @@ const EXPORTABLE_KEYS = [
 
 /**
  * Writes a secret to the secrets file
- * @param {import('../users').UserDirectoryList} directories User directories
+ * @param {import('../users.js').UserDirectoryList} directories User directories
  * @param {string} key Secret key
  * @param {string} value Secret value
  */
-function writeSecret(directories, key, value) {
+export function writeSecret(directories, key, value) {
     const filePath = path.join(directories.root, SECRETS_FILE);
 
     if (!fs.existsSync(filePath)) {
@@ -78,11 +85,11 @@ function writeSecret(directories, key, value) {
 
 /**
  * Deletes a secret from the secrets file
- * @param {import('../users').UserDirectoryList} directories User directories
+ * @param {import('../users.js').UserDirectoryList} directories User directories
  * @param {string} key Secret key
  * @returns
  */
-function deleteSecret(directories, key) {
+export function deleteSecret(directories, key) {
     const filePath = path.join(directories.root, SECRETS_FILE);
 
     if (!fs.existsSync(filePath)) {
@@ -97,11 +104,11 @@ function deleteSecret(directories, key) {
 
 /**
  * Reads a secret from the secrets file
- * @param {import('../users').UserDirectoryList} directories User directories
+ * @param {import('../users.js').UserDirectoryList} directories User directories
  * @param {string} key Secret key
  * @returns {string} Secret value
  */
-function readSecret(directories, key) {
+export function readSecret(directories, key) {
     const filePath = path.join(directories.root, SECRETS_FILE);
 
     if (!fs.existsSync(filePath)) {
@@ -115,10 +122,10 @@ function readSecret(directories, key) {
 
 /**
  * Reads the secret state from the secrets file
- * @param {import('../users').UserDirectoryList} directories User directories
+ * @param {import('../users.js').UserDirectoryList} directories User directories
  * @returns {object} Secret state
  */
-function readSecretState(directories) {
+export function readSecretState(directories) {
     const filePath = path.join(directories.root, SECRETS_FILE);
 
     if (!fs.existsSync(filePath)) {
@@ -138,14 +145,14 @@ function readSecretState(directories) {
 
 /**
  * Reads all secrets from the secrets file
- * @param {import('../users').UserDirectoryList} directories User directories
+ * @param {import('../users.js').UserDirectoryList} directories User directories
  * @returns {Record<string, string> | undefined} Secrets
  */
-function getAllSecrets(directories) {
+export function getAllSecrets(directories) {
     const filePath = path.join(directories.root, SECRETS_FILE);
 
     if (!fs.existsSync(filePath)) {
-        console.log('Secrets file does not exist');
+        console.error('Secrets file does not exist');
         return undefined;
     }
 
@@ -154,9 +161,9 @@ function getAllSecrets(directories) {
     return secrets;
 }
 
-const router = express.Router();
+export const router = express.Router();
 
-router.post('/write', jsonParser, (request, response) => {
+router.post('/write', (request, response) => {
     const key = request.body.key;
     const value = request.body.value;
 
@@ -164,7 +171,7 @@ router.post('/write', jsonParser, (request, response) => {
     return response.send('ok');
 });
 
-router.post('/read', jsonParser, (request, response) => {
+router.post('/read', (request, response) => {
     try {
         const state = readSecretState(request.user.directories);
         return response.send(state);
@@ -174,8 +181,8 @@ router.post('/read', jsonParser, (request, response) => {
     }
 });
 
-router.post('/view', jsonParser, async (request, response) => {
-    const allowKeysExposure = getConfigValue('allowKeysExposure', false);
+router.post('/view', async (request, response) => {
+    const allowKeysExposure = getConfigValue('allowKeysExposure', false, 'boolean');
 
     if (!allowKeysExposure) {
         console.error('secrets.json could not be viewed unless the value of allowKeysExposure in config.yaml is set to true');
@@ -196,8 +203,8 @@ router.post('/view', jsonParser, async (request, response) => {
     }
 });
 
-router.post('/find', jsonParser, (request, response) => {
-    const allowKeysExposure = getConfigValue('allowKeysExposure', false);
+router.post('/find', (request, response) => {
+    const allowKeysExposure = getConfigValue('allowKeysExposure', false, 'boolean');
     const key = request.body.key;
 
     if (!allowKeysExposure && !EXPORTABLE_KEYS.includes(key)) {
@@ -209,7 +216,7 @@ router.post('/find', jsonParser, (request, response) => {
         const secret = readSecret(request.user.directories, key);
 
         if (!secret) {
-            response.sendStatus(404);
+            return response.sendStatus(404);
         }
 
         return response.send({ value: secret });
@@ -218,13 +225,3 @@ router.post('/find', jsonParser, (request, response) => {
         return response.sendStatus(500);
     }
 });
-
-module.exports = {
-    writeSecret,
-    readSecret,
-    deleteSecret,
-    readSecretState,
-    getAllSecrets,
-    SECRET_KEYS,
-    router,
-};

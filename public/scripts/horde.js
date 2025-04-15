@@ -181,6 +181,14 @@ function setContextSizePreview() {
     }
 }
 
+/** Generates text using the Horde API.
+ * @param {string} prompt
+ * @param params
+ * @param signal
+ * @param reportProgress
+ * @returns {Promise<{text: *, workerName: string}>}
+ * @throws {Error}
+ */
 async function generateHorde(prompt, params, signal, reportProgress) {
     validateHordeModel();
     delete params.prompt;
@@ -398,6 +406,8 @@ jQuery(function () {
         } else {
             $('#adjustedHordeParams').text('Context: --, Response: --');
         }
+
+        saveSettingsDebounced();
     });
 
     $('#horde_auto_adjust_response_length').on('input', function () {

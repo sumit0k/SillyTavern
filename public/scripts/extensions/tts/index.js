@@ -4,6 +4,7 @@ import { delay, escapeRegex, getBase64Async, getStringHash, onlyUnique } from '.
 import { EdgeTtsProvider } from './edge.js';
 import { ElevenLabsTtsProvider } from './elevenlabs.js';
 import { SileroTtsProvider } from './silerotts.js';
+import { GptSovitsV2Provider } from './gpt-sovits-v2.js';
 import { CoquiTtsProvider } from './coqui.js';
 import { SystemTtsProvider } from './system.js';
 import { NovelTtsProvider } from './novel.js';
@@ -15,6 +16,7 @@ import { VITSTtsProvider } from './vits.js';
 import { GSVITtsProvider } from './gsvi.js';
 import { SBVits2TtsProvider } from './sbvits2.js';
 import { AllTalkTtsProvider } from './alltalk.js';
+import { CosyVoiceProvider } from './cosyvoice.js';
 import { SpeechT5TtsProvider } from './speecht5.js';
 import { AzureTtsProvider } from './azure.js';
 import { SlashCommandParser } from '../../slash-commands/SlashCommandParser.js';
@@ -24,13 +26,14 @@ import { debounce_timeout } from '../../constants.js';
 import { SlashCommandEnumValue, enumTypes } from '../../slash-commands/SlashCommandEnumValue.js';
 import { enumIcons } from '../../slash-commands/SlashCommandCommonEnumsProvider.js';
 import { POPUP_TYPE, callGenericPopup } from '../../popup.js';
-export { talkingAnimation };
+import { GoogleTranslateTtsProvider } from './google-translate.js';
+import { KokoroTtsProvider } from './kokoro.js';
 
 const UPDATE_INTERVAL = 1000;
+const wrapper = new ModuleWorkerWrapper(moduleWorker);
 
 let voiceMapEntries = [];
 let voiceMap = {}; // {charName:voiceid, charName2:voiceid2}
-let talkingHeadState = false;
 let lastChatId = null;
 let lastMessage = null;
 let lastMessageHash = null;
@@ -86,9 +89,13 @@ const ttsProviders = {
     AllTalk: AllTalkTtsProvider,
     Azure: AzureTtsProvider,
     Coqui: CoquiTtsProvider,
+    'CosyVoice (Unofficial)': CosyVoiceProvider,
     Edge: EdgeTtsProvider,
     ElevenLabs: ElevenLabsTtsProvider,
+    'Google Translate': GoogleTranslateTtsProvider,
     GSVI: GSVITtsProvider,
+    'GPT-SoVITS-V2 (Unofficial)': GptSovitsV2Provider,
+    Kokoro: KokoroTtsProvider,
     Novel: NovelTtsProvider,
     OpenAI: OpenAITtsProvider,
     'OpenAI Compatible': OpenAICompatibleTtsProvider,
@@ -114,7 +121,7 @@ async function onNarrateOneMessage() {
     }
 
     resetTtsPlayback();
-    ttsJobQueue.push(message);
+    processAndQueueTtsMessage(message);
     moduleWorker();
 }
 
@@ -141,7 +148,7 @@ async function onNarrateText(args, text) {
     }
 
     resetTtsPlayback();
-    ttsJobQueue.push({ mes: text, name: name });
+    processAndQueueTtsMessage({ mes: text, name: name });
     await moduleWorker();
 
     // Return back to the chat voices
@@ -156,27 +163,6 @@ async function moduleWorker() {
 
     processTtsQueue();
     processAudioJobQueue();
-    updateUiAudioPlayState();
-}
-
-function talkingAnimation(switchValue) {
-    if (!modules.includes('talkinghead')) {
-        console.debug('Talking Animation module not loaded');
-        return;
-    }
-
-    const apiUrl = getApiUrl();
-    const animationType = switchValue ? 'start' : 'stop';
-
-    if (switchValue !== talkingHeadState) {
-        try {
-            console.log(animationType + ' Talking Animation');
-            doExtrasFetch(`${apiUrl}/api/talkinghead/${animationType}_talking`);
-            talkingHeadState = switchValue;
-        } catch (error) {
-            // Handle the error here or simply ignore it to prevent logging
-        }
-    }
     updateUiAudioPlayState();
 }
 
@@ -212,6 +198,36 @@ function isTtsProcessing() {
         processing = true;
     }
     return processing;
+}
+
+/**
+ * Splits a message into lines and adds each non-empty line to the TTS job queue.
+ * @param {Object} message - The message object to be processed.
+ * @param {string} message.mes - The text of the message to be split into lines.
+ * @param {string} message.name - The name associated with the message.
+ * @returns {void}
+ */
+function processAndQueueTtsMessage(message) {
+    if (!extension_settings.tts.narrate_by_paragraphs) {
+        ttsJobQueue.push(message);
+        return;
+    }
+
+    const lines = message.mes.split('\n');
+
+    for (let i = 0; i < lines.length; i++) {
+        const line = lines[i];
+
+        if (line.length === 0) {
+            continue;
+        }
+
+        ttsJobQueue.push(
+            Object.assign({}, message, {
+                mes: line,
+            }),
+        );
+    }
 }
 
 function debugTtsPlayback() {
@@ -341,10 +357,9 @@ function onAudioControlClicked() {
     // Not pausing, doing a full stop to anything TTS is doing. Better UX as pause is not as useful
     if (!audioElement.paused || isTtsProcessing()) {
         resetTtsPlayback();
-        talkingAnimation(false);
     } else {
         // Default play behavior if not processing or playing is to play the last message.
-        ttsJobQueue.push(context.chat[context.chat.length - 1]);
+        processAndQueueTtsMessage(context.chat[context.chat.length - 1]);
     }
     updateUiAudioPlayState();
 }
@@ -368,8 +383,8 @@ function addAudioControl() {
 function completeCurrentAudioJob() {
     audioQueueProcessorReady = true;
     currentAudioJob = null;
-    talkingAnimation(false); //stop lip animation
     // updateUiPlayState();
+    wrapper.update();
 }
 
 /**
@@ -398,7 +413,6 @@ async function processAudioJobQueue() {
         audioQueueProcessorReady = false;
         currentAudioJob = audioJobQueue.shift();
         playAudioData(currentAudioJob);
-        talkingAnimation(true);
     } catch (error) {
         toastr.error(error.toString());
         console.error(error);
@@ -460,7 +474,7 @@ async function processTtsQueue() {
     }
 
     if (extension_settings.tts.skip_tags) {
-        text = text.replace(/<.*?>.*?<\/.*?>/g, '').trim();
+        text = text.replace(/<.*?>[\s\S]*?<\/.*?>/g, '').trim();
     }
 
     if (!extension_settings.tts.pass_asterisks) {
@@ -470,12 +484,15 @@ async function processTtsQueue() {
     }
 
     if (extension_settings.tts.narrate_quoted_only) {
-        const special_quotes = /[“”«»]/g; // Extend this regex to include other special quotes
+        const special_quotes = /[“”«»「」『』＂＂]/g; // Extend this regex to include other special quotes
         text = text.replace(special_quotes, '"');
         const matches = text.match(/".*?"/g); // Matches text inside double quotes, non-greedily
         const partJoiner = (ttsProvider?.separator || ' ... ');
         text = matches ? matches.join(partJoiner) : text;
     }
+
+    // Remove embedded images
+    text = text.replace(/!\[.*?]\([^)]*\)/g, '');
 
     if (typeof ttsProvider?.processText === 'function') {
         text = await ttsProvider.processText(text);
@@ -560,6 +577,7 @@ function loadSettings() {
     $('#tts_narrate_quoted').prop('checked', extension_settings.tts.narrate_quoted_only);
     $('#tts_auto_generation').prop('checked', extension_settings.tts.auto_generation);
     $('#tts_periodic_auto_generation').prop('checked', extension_settings.tts.periodic_auto_generation);
+    $('#tts_narrate_by_paragraphs').prop('checked', extension_settings.tts.narrate_by_paragraphs);
     $('#tts_narrate_translated_only').prop('checked', extension_settings.tts.narrate_translated_only);
     $('#tts_narrate_user').prop('checked', extension_settings.tts.narrate_user);
     $('#tts_pass_asterisks').prop('checked', extension_settings.tts.pass_asterisks);
@@ -629,6 +647,11 @@ function onPeriodicAutoGenerationClick() {
     saveSettingsDebounced();
 }
 
+function onNarrateByParagraphsClick() {
+    extension_settings.tts.narrate_by_paragraphs = !!$('#tts_narrate_by_paragraphs').prop('checked');
+    saveSettingsDebounced();
+}
+
 
 function onNarrateDialoguesClick() {
     extension_settings.tts.narrate_dialogues_only = !!$('#tts_narrate_dialogues').prop('checked');
@@ -695,6 +718,9 @@ async function loadTtsProvider(provider) {
 }
 
 function onTtsProviderChange() {
+    if (typeof ttsProvider?.dispose === 'function') {
+        ttsProvider.dispose();
+    }
     const ttsProviderSelection = $('#tts_provider').val();
     extension_settings.tts.currentProvider = ttsProviderSelection;
     $('#playback_rate_block').toggle(extension_settings.tts.currentProvider !== 'System');
@@ -807,7 +833,12 @@ async function onMessageEvent(messageId, lastCharIndex) {
     lastChatId = context.chatId;
 
     console.debug(`Adding message from ${message.name} for TTS processing: "${message.mes}"`);
-    ttsJobQueue.push(message);
+
+    if (extension_settings.tts.periodic_auto_generation) {
+        ttsJobQueue.push(message);
+    } else {
+        processAndQueueTtsMessage(message);
+    }
 }
 
 async function onMessageDeleted() {
@@ -1147,6 +1178,7 @@ jQuery(async function () {
         $('#tts_pass_asterisks').on('click', onPassAsterisksClick);
         $('#tts_auto_generation').on('click', onAutoGenerationClick);
         $('#tts_periodic_auto_generation').on('click', onPeriodicAutoGenerationClick);
+        $('#tts_narrate_by_paragraphs').on('click', onNarrateByParagraphsClick);
         $('#tts_narrate_user').on('click', onNarrateUserClick);
 
         $('#playback_rate').on('input', function () {
@@ -1168,7 +1200,6 @@ jQuery(async function () {
     loadSettings(); // Depends on Extension Controls and loadTtsProvider
     loadTtsProvider(extension_settings.tts.currentProvider); // No dependencies
     addAudioControl(); // Depends on Extension Controls
-    const wrapper = new ModuleWorkerWrapper(moduleWorker);
     setInterval(wrapper.update.bind(wrapper), UPDATE_INTERVAL); // Init depends on all the things
     eventSource.on(event_types.MESSAGE_SWIPED, resetTtsPlayback);
     eventSource.on(event_types.CHAT_CHANGED, onChatChanged);
@@ -1176,8 +1207,8 @@ jQuery(async function () {
     eventSource.on(event_types.GROUP_UPDATED, onChatChanged);
     eventSource.on(event_types.GENERATION_STARTED, onGenerationStarted);
     eventSource.on(event_types.GENERATION_ENDED, onGenerationEnded);
-    eventSource.makeLast(event_types.CHARACTER_MESSAGE_RENDERED, onMessageEvent);
-    eventSource.makeLast(event_types.USER_MESSAGE_RENDERED, onMessageEvent);
+    eventSource.makeLast(event_types.CHARACTER_MESSAGE_RENDERED, (messageId) => onMessageEvent(messageId));
+    eventSource.makeLast(event_types.USER_MESSAGE_RENDERED, (messageId) => onMessageEvent(messageId));
     SlashCommandParser.addCommandObject(SlashCommand.fromProps({
         name: 'speak',
         callback: async (args, value) => {
