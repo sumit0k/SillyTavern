@@ -4,6 +4,7 @@ const sanitize = require('sanitize-filename');
 const { getBasicAuthHeader, delay, getHexString } = require('../util.js');
 const fs = require('fs');
 const path = require('path');
+const _ = require('lodash');
 const writeFileAtomicSync = require('write-file-atomic').sync;
 const { jsonParser } = require('../express-common');
 const { readSecret, SECRET_KEYS } = require('./secrets.js');
@@ -318,7 +319,7 @@ router.post('/set-model', jsonParser, async (request, response) => {
 
 router.post('/generate', jsonParser, async (request, response) => {
     try {
-        console.log('SD WebUI request:', request.body);
+        console.log('SD WebUI request:', _.pick(request.body, ['prompt', 'negative_prompt', 'sampler_name', 'width', 'height', 'seed']));
 
         const url = new URL(request.body.url);
         url.pathname = '/sdapi/v1/txt2img';

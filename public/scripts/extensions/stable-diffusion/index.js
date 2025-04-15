@@ -3011,7 +3011,7 @@ async function generateAutoImage(generationType, prompt, negativePrompt, signal)
             hr_scale: extension_settings.sd.hr_scale,
             denoising_strength: extension_settings.sd.denoising_strength,
             hr_second_pass_steps: extension_settings.sd.hr_second_pass_steps,
-            seed: extension_settings.sd.seed >= 0 ? extension_settings.sd.seed : undefined,
+            seed: -1 || extension_settings.sd.seed >= 0 ? extension_settings.sd.seed : undefined,
             // For AUTO1111
             override_settings: {
                 CLIP_stop_at_last_layers: extension_settings.sd.clip_skip,
