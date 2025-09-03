@@ -11,6 +11,11 @@ const API_NOVELAI = 'https://api.novelai.net';
 const TEXT_NOVELAI = 'https://text.novelai.net';
 const IMAGE_NOVELAI = 'https://image.novelai.net';
 
+// Constants for skip_cfg_above_sigma (Variety+) calculation
+const REFERENCE_PIXEL_COUNT = 1011712;   // 832 * 1216 reference image size
+const SIGMA_MAGIC_NUMBER = 19;           // Base sigma multiplier for V3 and V4 models
+const SIGMA_MAGIC_NUMBER_V4_5 = 58;      // Base sigma multiplier for V4.5 models
+
 // Ban bracket generation, plus defaults
 const badWordsList = [
     [3], [49356], [1431], [31715], [34387], [20765], [30702], [10691], [49333], [1266],
@@ -110,6 +115,17 @@ function getRepPenaltyWhitelist(model) {
     }
 
     return null;
+}
+
+function calculateSkipCfgAboveSigma(width, height, modelName) {
+    const magicConstant = modelName?.includes('nai-diffusion-4-5')
+        ? SIGMA_MAGIC_NUMBER_V4_5
+        : SIGMA_MAGIC_NUMBER;
+
+    const pixelCount = width * height;
+    const ratio = pixelCount / REFERENCE_PIXEL_COUNT;
+
+    return Math.pow(ratio, 0.5) * magicConstant;
 }
 
 export const router = express.Router();
@@ -270,7 +286,7 @@ router.post('/generate', async function (req, res) {
                     // ignore
                 }
 
-                return res.status(response.status).send({ error: { message } });
+                return res.status(500).send({ error: { message } });
             }
 
             /** @type {any} */
@@ -332,6 +348,13 @@ router.post('/generate-image', async (request, response) => {
                     sm: request.body.sm ?? false,
                     sm_dyn: request.body.sm_dyn ?? false,
                     uncond_scale: 1,
+                    skip_cfg_above_sigma: request.body.variety_boost
+                        ? calculateSkipCfgAboveSigma(
+                            request.body.width ?? 512,
+                            request.body.height ?? 512,
+                            request.body.model ?? 'nai-diffusion',
+                        )
+                        : null,
                     use_coords: false,
                     characterPrompts: [],
                     reference_image_multiple: [],
@@ -394,7 +417,8 @@ router.post('/generate-image', async (request, response) => {
             });
 
             if (!upscaleResult.ok) {
-                throw new Error('NovelAI returned an error.');
+                const text = await upscaleResult.text();
+                throw new Error('NovelAI returned an error.', { cause: text });
             }
 
             const upscaledArchiveBuffer = await upscaleResult.arrayBuffer();
@@ -408,7 +432,7 @@ router.post('/generate-image', async (request, response) => {
 
             return response.send(upscaledBase64);
         } catch (error) {
-            console.warn('NovelAI generated an image, but upscaling failed. Returning original image.');
+            console.warn('NovelAI generated an image, but upscaling failed. Returning original image.', error);
             return response.send(originalBase64);
         }
     } catch (error) {

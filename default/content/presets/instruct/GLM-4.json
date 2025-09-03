@@ -1,15 +1,13 @@
 {
-    "input_sequence": "<|user|>",
-    "output_sequence": "<|model|>",
+    "input_sequence": "<|user|>\n",
+    "output_sequence": "<|assistant|>\n",
     "last_output_sequence": "",
     "system_sequence": "",
-    "stop_sequence": "<|user|>",
+    "stop_sequence": "",
     "wrap": false,
     "macro": true,
-    "names_behavior": "always",
+    "names_behavior": "force",
     "activation_regex": "",
-    "system_sequence_prefix": "<|system|>",
-    "system_sequence_suffix": "",
     "first_output_sequence": "",
     "skip_examples": false,
     "output_suffix": "",
@@ -18,5 +16,10 @@
     "user_alignment_message": "",
     "system_same_as_user": true,
     "last_system_sequence": "",
-    "name": "Pygmalion"
+    "first_input_sequence": "",
+    "last_input_sequence": "",
+    "sequences_as_stop_strings": true,
+    "story_string_prefix": "[gMASK]<sop>",
+    "story_string_suffix": "\n",
+    "name": "GLM-4"
 }
